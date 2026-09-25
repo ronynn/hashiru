@@ -1,0 +1,1 @@
+First Release, Oracle functioning based on circadian data and book list.

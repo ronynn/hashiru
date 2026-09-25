@@ -1,0 +1,1 @@
+A math model oracle android app that tells you what to study next
