@@ -23,6 +23,6 @@
             android:name=".WebViewActivity"
             android:exported="false"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
-            android:theme="@style/AppTheme" />
+            android:theme="@style/WebViewTheme" />
     </application>
 </manifest>

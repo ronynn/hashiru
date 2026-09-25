@@ -3,8 +3,30 @@ package io.github.ronynn.hashiru;
 import org.commonmark.parser.Parser;
 import org.commonmark.renderer.html.HtmlRenderer;
 
+import org.commonmark.Extension;
+import org.commonmark.ext.gfm.strikethrough.StrikethroughExtension;
+import org.commonmark.ext.gfm.tables.TablesExtension;
+import org.commonmark.parser.Parser;
+import org.commonmark.renderer.html.HtmlRenderer;
+
+import java.util.Arrays;
+import java.util.List;
+
 public class ReaderRenderer {
 
+    private static final List<Extension> EXTENSIONS = Arrays.asList(
+            TablesExtension.create(),
+            StrikethroughExtension.create()
+    );
+
+    private static final Parser PARSER = Parser.builder()
+            .extensions(EXTENSIONS)
+            .build();
+
+    private static final HtmlRenderer RENDERER = HtmlRenderer.builder()
+            .extensions(EXTENSIONS)
+            .build();
+  
     private static final Parser PARSER = Parser.builder().build();
     private static final HtmlRenderer RENDERER = HtmlRenderer.builder().build();
 
