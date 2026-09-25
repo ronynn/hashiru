@@ -21,8 +21,19 @@
 
         <activity
             android:name=".WebViewActivity"
-            android:exported="false"
+            android:exported="true"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
-            android:theme="@style/WebViewTheme" />
+            android:theme="@style/WebViewTheme">
+
+            <!-- Open .md / .markdown / .txt / .org from other apps -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" android:mimeType="text/markdown" />
+                <data android:scheme="file"    android:mimeType="text/markdown" />
+                <data android:scheme="content" android:mimeType="text/x-markdown" />
+                <data android:scheme="file"    android:mimeType="text/x-markdown" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>

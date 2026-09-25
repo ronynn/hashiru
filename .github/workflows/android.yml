@@ -26,7 +26,7 @@ jobs:
 
       # Provisions Gradle 8.9 on PATH + enables built-in caching
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v5
         with:
           gradle-version: 8.9
 
@@ -89,14 +89,14 @@ jobs:
 
       - name: Upload APK Artifact (Release)
         if: contains(github.event.head_commit.message, 'release')
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: release-apk
           path: app/build/outputs/apk/release/*.apk
 
       - name: Upload APK Artifact (Debug)
         if: ${{ !contains(github.event.head_commit.message, 'release') }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: debug-apk
           path: app/build/outputs/apk/debug/*.apk
