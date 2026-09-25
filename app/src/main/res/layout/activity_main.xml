@@ -2,16 +2,19 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical">
+    android:orientation="vertical"
+    android:background="#0E0E0E"
+    android:fitsSystemWindows="true">
 
     <TextView
         android:id="@+id/path"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:padding="10dp"
-        android:background="#1F000000"
+        android:background="#1A1A1A"
         android:fontFamily="monospace"
         android:textSize="12sp"
+        android:textColor="#CCCCCC"
         android:maxLines="1"
         android:ellipsize="start"
         android:text="/" />
@@ -25,8 +28,9 @@
             android:id="@+id/list"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:divider="@android:color/darker_gray"
-            android:dividerHeight="1px" />
+            android:divider="#222222"
+            android:dividerHeight="1px"
+            android:cacheColorHint="#00000000" />
 
         <TextView
             android:id="@+id/empty"
@@ -34,6 +38,7 @@
             android:layout_height="wrap_content"
             android:layout_gravity="center"
             android:textSize="15sp"
+            android:textColor="#888888"
             android:text="Tap below to pick a folder" />
     </FrameLayout>
 

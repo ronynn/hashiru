@@ -5,9 +5,14 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.provider.DocumentsContract;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 
 import fi.iki.elonen.NanoHTTPD;
 
@@ -17,8 +22,11 @@ public class LocalFileServer extends NanoHTTPD {
     private final ContentResolver resolver;
     private final String rootDocId;
 
+    private static final Set<String> READER_EXTS = new HashSet<>(
+            Arrays.asList("md", "markdown", "txt", "org", "twee"));
+
     public LocalFileServer(Uri treeUri, ContentResolver resolver) {
-        super("127.0.0.1", 0); // ephemeral port
+        super("127.0.0.1", 0); // ephemeral port assigned by OS
         this.treeUri = treeUri;
         this.resolver = resolver;
         this.rootDocId = DocumentsContract.getTreeDocumentId(treeUri);
@@ -29,7 +37,6 @@ public class LocalFileServer extends NanoHTTPD {
         String uri = session.getUri();
         if (uri.startsWith("/")) uri = uri.substring(1);
 
-        // Decode percent-encoding (%20 etc.)
         try {
             uri = URLDecoder.decode(uri, "UTF-8");
         } catch (Exception ignored) {}
@@ -44,6 +51,7 @@ public class LocalFileServer extends NanoHTTPD {
                     "<html><body><h3>No index.html in root</h3></body></html>");
         }
 
+        // Walk the tree
         String cur = rootDocId;
         for (String part : uri.split("/")) {
             if (part.isEmpty()) continue;
@@ -95,6 +103,30 @@ public class LocalFileServer extends NanoHTTPD {
         if (mime == null || DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) {
             return plain(Response.Status.NOT_FOUND, "Not a file");
         }
+
+        // Reader path: .md, .markdown, .txt, .org, .twee
+        String ext = "";
+        if (name != null) {
+            int dot = name.lastIndexOf('.');
+            if (dot >= 0) ext = name.substring(dot + 1).toLowerCase();
+        }
+
+        if (READER_EXTS.contains(ext)) {
+            try {
+                InputStream in = resolver.openInputStream(docUri);
+                if (in == null) return plain(Response.Status.NOT_FOUND, "Cannot open");
+                String raw = readAll(in);
+                String html = ReaderRenderer.render(ext, raw);
+                Response r = newFixedLengthResponse(
+                        Response.Status.OK, "text/html; charset=utf-8", html);
+                r.addHeader("Cache-Control", "no-store");
+                return r;
+            } catch (IOException e) {
+                return plain(Response.Status.INTERNAL_ERROR, e.getMessage());
+            }
+        }
+
+        // Default: serve the file as-is
         if ("application/octet-stream".equals(mime)) {
             mime = guessMime(name);
         }
@@ -109,6 +141,15 @@ public class LocalFileServer extends NanoHTTPD {
         } catch (IOException e) {
             return plain(Response.Status.INTERNAL_ERROR, e.getMessage());
         }
+    }
+
+    private String readAll(InputStream in) throws IOException {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
+        in.close();
+        return new String(bos.toByteArray(), StandardCharsets.UTF_8);
     }
 
     private Response plain(Response.Status s, String body) {

@@ -9,7 +9,6 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.ListView;
 import android.widget.TextView;
-import android.widget.Toast;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -27,7 +26,7 @@ public class MainActivity extends Activity {
     private Uri treeUri;
     private String rootDocId;
     private String currentDocId;
-    private final List<String> folderPath = new ArrayList<>(); // names from root
+    private final List<String> folderPath = new ArrayList<>();
 
     @Override
     protected void onCreate(Bundle b) {
@@ -90,7 +89,6 @@ public class MainActivity extends Activity {
     private void refresh() {
         if (treeUri == null) return;
         List<SafDoc> items = SafDoc.list(getContentResolver(), treeUri, currentDocId);
-        // directories first, then alphabetical
         items.sort((a, b) -> {
             if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
             String an = a.name == null ? "" : a.name;
@@ -136,6 +134,7 @@ public class MainActivity extends Activity {
             rel = String.join("/", folderPath) + "/" + d.name;
         }
         Intent i = new Intent(this, WebViewActivity.class);
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
         i.putExtra(WebViewActivity.EXTRA_TREE_URI, treeUri.toString());
         i.putExtra(WebViewActivity.EXTRA_REL_PATH, rel);
         startActivity(i);
