@@ -13,6 +13,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
 import android.view.View;
+import android.view.Window;
 import android.view.WindowManager;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -33,6 +34,9 @@ public class WebViewActivity extends Activity {
     private static final String POS_PREFS = "hashiru_positions";
     private static final int REQ_FILE_CHOOSER = 2001;
 
+    // Solid bar colors for HTML apps.
+    private static final int BAR_COLOR_HTML = 0xFF1A1A1A;
+
     private LocalFileServer server;
     private WebView web;
     private SharedPreferences posPrefs;
@@ -40,16 +44,13 @@ public class WebViewActivity extends Activity {
     private boolean restorePending = true;
     private ValueCallback<Uri[]> fileChooserCallback;
     private String currentExt = "";
+    private boolean isReader = false;
     private int statusBarHeight = 0;
 
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         setContentView(R.layout.activity_webview);
-
-        // Draw under the status bar (top-only edge-to-edge)
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
-        getWindow().setStatusBarColor(Color.TRANSPARENT);
 
         statusBarHeight = getStatusBarHeight();
 
@@ -76,7 +77,7 @@ public class WebViewActivity extends Activity {
             @Override
             public void onPageFinished(WebView v, String url) {
                 injectTapHighlightFix();
-                injectSafeAreaPadding();
+                if (isReader) injectReaderSafeAreaPadding();
                 if (restorePending) {
                     restorePending = false;
                     int y = posPrefs.getInt(posKey, 0);
@@ -117,6 +118,7 @@ public class WebViewActivity extends Activity {
 
         posKey = treeUriStr + "|" + relPath;
         currentExt = extOf(relPath);
+        isReader = isReaderExt(currentExt);
 
         if (Build.VERSION.SDK_INT >= 21) {
             setTaskDescription(new ActivityManager.TaskDescription(relPath));
@@ -139,6 +141,7 @@ public class WebViewActivity extends Activity {
     private void openDirectFile(Uri fileUri) {
         String name = queryDisplayName(fileUri);
         currentExt = extOf(name);
+        isReader = isReaderExt(currentExt);
         posKey = fileUri.toString();
 
         if (Build.VERSION.SDK_INT >= 21) {
@@ -218,15 +221,13 @@ public class WebViewActivity extends Activity {
     }
 
     /**
-     * Pushes page content below the transparent status bar at rest.
-     * Content still flows under the bar while scrolling — that's the point.
-     * Reader pages get a bit more breathing room to match their 1.2em top padding.
+     * Reader-only. Pushes rendered markdown below the transparent status bar at rest.
+     * Content still flows under the bar while scrolling.
      */
-    private void injectSafeAreaPadding() {
+    private void injectReaderSafeAreaPadding() {
         if (statusBarHeight <= 0) return;
         float density = getResources().getDisplayMetrics().density;
-        int extraDp = isReaderExt(currentExt) ? 20 : 4;
-        int topPad = statusBarHeight + (int) (extraDp * density);
+        int topPad = statusBarHeight + (int) (20 * density);
 
         String js = "(function(){try{"
                 + "var id='hashiru-safe-top';"
@@ -263,11 +264,12 @@ public class WebViewActivity extends Activity {
     }
 
     private void applyOrientation(int orientation) {
-        View decor = getWindow().getDecorView();
-        WindowManager.LayoutParams lp = getWindow().getAttributes();
+        Window win = getWindow();
+        View decor = win.getDecorView();
+        WindowManager.LayoutParams lp = win.getAttributes();
 
         if (orientation == Configuration.ORIENTATION_LANDSCAPE) {
-            // Full-bleed: hide status + nav, draw into cutout.
+            // Full-bleed for both reader and HTML — hides status, nav, cuts into notch.
             decor.setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                     | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
@@ -282,8 +284,16 @@ public class WebViewActivity extends Activity {
                 lp.layoutInDisplayCutoutMode =
                         WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
             }
-        } else {
-            // Portrait: draw under status bar only. Nav stays visible.
+            win.setAttributes(lp);
+            return;
+        }
+
+        // Portrait
+        if (isReader) {
+            // Transparent status bar, draw under it, hide nothing.
+            win.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+            win.setStatusBarColor(Color.TRANSPARENT);
+            win.setNavigationBarColor(BAR_COLOR_HTML);
             decor.setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                     | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
@@ -291,8 +301,19 @@ public class WebViewActivity extends Activity {
                 lp.layoutInDisplayCutoutMode =
                         WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
             }
+        } else {
+            // HTML: solid bars, no edge-to-edge, no injection.
+            win.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+            win.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
+            win.setStatusBarColor(BAR_COLOR_HTML);
+            win.setNavigationBarColor(BAR_COLOR_HTML);
+            decor.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+            if (Build.VERSION.SDK_INT >= 28) {
+                lp.layoutInDisplayCutoutMode =
+                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
+            }
         }
-        getWindow().setAttributes(lp);
+        win.setAttributes(lp);
     }
 
     private void savePosition() {
