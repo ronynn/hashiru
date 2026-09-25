@@ -1,8 +1,5 @@
 package io.github.ronynn.hashiru;
 
-import org.commonmark.parser.Parser;
-import org.commonmark.renderer.html.HtmlRenderer;
-
 import org.commonmark.Extension;
 import org.commonmark.ext.gfm.strikethrough.StrikethroughExtension;
 import org.commonmark.ext.gfm.tables.TablesExtension;
@@ -27,8 +24,6 @@ public class ReaderRenderer {
             .extensions(EXTENSIONS)
             .build();
   
-    private static final Parser PARSER = Parser.builder().build();
-    private static final HtmlRenderer RENDERER = HtmlRenderer.builder().build();
 
     public static String render(String ext, String raw) {
         String body;
