@@ -1,1 +1,1 @@
-A math model oracle android app that tells you what to study next
+hashiru (走る) is a HTML runner app for android for quickly building and setting up custom apps for personal use, inspired by Termux-GUI and APDE

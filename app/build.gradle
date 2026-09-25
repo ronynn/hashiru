@@ -3,10 +3,10 @@ apply plugin: 'com.android.application'
 android {
     compileSdkVersion 36
     
-    namespace "io.github.ronynn.shintaku"
+    namespace "io.github.ronynn.hashiru"
 
     defaultConfig {
-        applicationId "io.github.ronynn.shintaku"
+        applicationId "io.github.ronynn.hashiru"
         minSdkVersion 21
         targetSdkVersion 36
         versionCode 1
@@ -40,5 +40,5 @@ android {
 }
 
 dependencies {
-    implementation fileTree(dir: 'libs', include: ['*.jar'])
+    implementation 'org.nanohttpd:nanohttpd:2.3.1'
 }

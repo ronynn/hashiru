@@ -1,39 +1,45 @@
-<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools"
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    tools:context=".MainActivity">
+    android:orientation="vertical">
 
-    <!-- Splash Screen (Black Background + Loading Indicator) -->
-    <RelativeLayout
-        android:id="@+id/splash_screen"
+    <TextView
+        android:id="@+id/path"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:background="#000000"
-        android:gravity="center">
+        android:layout_height="wrap_content"
+        android:padding="10dp"
+        android:background="#1F000000"
+        android:fontFamily="monospace"
+        android:textSize="12sp"
+        android:maxLines="1"
+        android:ellipsize="start"
+        android:text="/" />
 
-        <ProgressBar
-            android:id="@+id/progress_bar"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_centerInParent="true"
-            android:indeterminate="true"/>
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <ListView
+            android:id="@+id/list"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:divider="@android:color/darker_gray"
+            android:dividerHeight="1px" />
 
         <TextView
+            android:id="@+id/empty"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_below="@id/progress_bar"
-            android:layout_centerHorizontal="true"
-            android:text="_initialising _ronynn OS..."
-            android:textColor="#ebdbb2"
-            android:paddingTop="16dp"/>
-    </RelativeLayout>
+            android:layout_gravity="center"
+            android:textSize="15sp"
+            android:text="Tap below to pick a folder" />
+    </FrameLayout>
 
-    <!-- WebView (Initially Hidden) -->
-    <WebView
-        android:id="@+id/activity_main_webview"
+    <Button
+        android:id="@+id/pick"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:visibility="gone"/>
-
-</RelativeLayout>
+        android:layout_height="wrap_content"
+        android:text="Pick folder" />
+</LinearLayout>
