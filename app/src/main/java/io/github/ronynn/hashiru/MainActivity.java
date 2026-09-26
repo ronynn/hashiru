@@ -43,6 +43,10 @@ public class MainActivity extends Activity {
 
         pick.setOnClickListener(v -> {
             Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+            // FIX: request read + write + persistable so mini-apps can save back.
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
             startActivityForResult(i, REQ_PICK);
         });
 
@@ -69,8 +73,11 @@ public class MainActivity extends Activity {
         if (req == REQ_PICK && res == RESULT_OK && data != null && data.getData() != null) {
             Uri u = data.getData();
             try {
+                // FIX: take read + write.
                 getContentResolver().takePersistableUriPermission(
-                        u, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                        u,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
             } catch (SecurityException ignored) {}
             getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                     .putString(KEY_URI, u.toString()).apply();

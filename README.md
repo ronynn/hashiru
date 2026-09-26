@@ -36,6 +36,13 @@ A native file chooser bridge forwards input elements of type file to the system 
 - Edge-to-edge handling is conditional: reader pages use a transparent status bar with content drawn underneath and a small injected top padding sized to the status bar height, while HTML apps use solid bars and no injection, since arbitrary page layouts cannot be safely padded without visual regression.
 - Landscape mode uses immersive-sticky with display cutout overlay enabled, drawing content into camera cutout regions on supported API levels.
 - Build runs on GitHub Actions with Gradle provisioned by the setup-gradle action and no wrapper committed to the repository.
+- All your custom apps now share one origin (http://127.0.0.1:17463). That means they share localStorage, IndexedDB, and cookies. So in each mini-app, prefix your keys, e.g.:
+
+```js
+const KEY = 'tetris.highscore';       // not just 'highscore'
+const NOTES = 'notepad.v1.notes';
+```
+
 
 ## Uses
 

@@ -12,11 +12,15 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
+import android.util.Base64;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
+import android.webkit.DownloadListener;
+import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -24,6 +28,7 @@ import android.webkit.WebViewClient;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 
 public class WebViewActivity extends Activity {
@@ -33,8 +38,8 @@ public class WebViewActivity extends Activity {
 
     private static final String POS_PREFS = "hashiru_positions";
     private static final int REQ_FILE_CHOOSER = 2001;
+    private static final int REQ_SAVE_FILE = 2002;
 
-    // Solid bar colors for HTML apps.
     private static final int BAR_COLOR_HTML = 0xFF1A1A1A;
 
     private LocalFileServer server;
@@ -46,6 +51,9 @@ public class WebViewActivity extends Activity {
     private String currentExt = "";
     private boolean isReader = false;
     private int statusBarHeight = 0;
+
+    private String pendingSaveMime;
+    private String pendingSaveBase64;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -60,9 +68,9 @@ public class WebViewActivity extends Activity {
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
-        s.setDatabaseEnabled(true);
+        // FIX: file-chooser results are content:// URIs; WebView needs this.
+        s.setAllowContentAccess(true);
         s.setAllowFileAccess(false);
-        s.setAllowContentAccess(false);
         s.setAllowFileAccessFromFileURLs(false);
         s.setAllowUniversalAccessFromFileURLs(false);
         s.setCacheMode(WebSettings.LOAD_NO_CACHE);
@@ -73,7 +81,29 @@ public class WebViewActivity extends Activity {
 
         posPrefs = getSharedPreferences(POS_PREFS, MODE_PRIVATE);
 
+        web.addJavascriptInterface(new SaveBridge(), "__HashiruNative");
+
         web.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req) {
+                Uri u = req.getUrl();
+                if (u == null) return false;
+                String scheme = u.getScheme();
+                if (scheme == null) return false;
+                // Keep local server content in the WebView
+                if ("http".equals(scheme) || "https".equals(scheme)) {
+                    String host = u.getHost();
+                    if ("127.0.0.1".equals(host) || "localhost".equals(host)) return false;
+                }
+                // Everything else → external handler
+                try {
+                    Intent i = new Intent(Intent.ACTION_VIEW, u);
+                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(i);
+                } catch (ActivityNotFoundException ignored) {}
+                return true;
+            }
+
             @Override
             public void onPageFinished(WebView v, String url) {
                 injectTapHighlightFix();
@@ -104,6 +134,16 @@ public class WebViewActivity extends Activity {
             }
         });
 
+        // FIX: browser-style download support (blob:, data:, http(s)).
+        web.setDownloadListener(new DownloadListener() {
+            @Override
+            public void onDownloadStart(String url, String userAgent,
+                                        String contentDisposition,
+                                        String mime, long contentLength) {
+                handleDownload(url, mime);
+            }
+        });
+
         // Mode 1: launched from another app with a file
         if (Intent.ACTION_VIEW.equals(getIntent().getAction()) && getIntent().getData() != null) {
             openDirectFile(getIntent().getData());
@@ -125,9 +165,9 @@ public class WebViewActivity extends Activity {
         }
 
         Uri treeUri = Uri.parse(treeUriStr);
-        server = new LocalFileServer(treeUri, getContentResolver());
         try {
-            server.start();
+            // FIX: singleton server — stable origin, shared across activities.
+            server = LocalFileServer.acquire(treeUri, getContentResolver());
         } catch (IOException e) {
             finish();
             return;
@@ -137,6 +177,124 @@ public class WebViewActivity extends Activity {
 
         applyOrientation(getResources().getConfiguration().orientation);
     }
+
+    // ------------------------------------------------------------------ downloads
+
+    private void handleDownload(String url, String mimeFromHeader) {
+        if (url == null) return;
+
+        if (url.startsWith("blob:")) {
+            requestBlobAsBase64(url, mimeFromHeader);
+            return;
+        }
+
+        if (url.startsWith("data:")) {
+            int comma = url.indexOf(',');
+            if (comma < 0) return;
+            String meta = url.substring(5, comma);
+            String data = url.substring(comma + 1);
+            boolean isB64 = meta.toLowerCase().contains(";base64");
+            String m = meta.split(";")[0];
+            if (m.isEmpty()) m = (mimeFromHeader == null ? "*/*" : mimeFromHeader);
+            if (isB64) {
+                startSaveDocument(m, data);
+            } else {
+                try {
+                    String decoded = java.net.URLDecoder.decode(data, "UTF-8");
+                    String b64 = Base64.encodeToString(
+                            decoded.getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP);
+                    startSaveDocument(m, b64);
+                } catch (Exception ignored) {}
+            }
+            return;
+        }
+
+        // Any other scheme (http/https/ftp/…) — hand off to the system.
+        try {
+            Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
+        } catch (ActivityNotFoundException ignored) {}
+    }
+
+    private void requestBlobAsBase64(String blobUrl, String mime) {
+        String safeUrl = jsString(blobUrl);
+        String safeMime = jsString(mime == null ? "" : mime);
+        String js = "(function(){try{"
+                + "fetch(" + safeUrl + ").then(function(r){return r.blob();}).then(function(b){"
+                + "var fr=new FileReader();"
+                + "fr.onload=function(){var s=fr.result;var i=s.indexOf(',');"
+                + "var b64=(i>=0?s.substring(i+1):s);"
+                + "__HashiruNative.downloadBase64(b.type||" + safeMime + ",b64);};"
+                + "fr.onerror=function(){};"
+                + "fr.readAsDataURL(b);"
+                + "}).catch(function(){});"
+                + "}catch(e){}})();";
+        web.evaluateJavascript(js, null);
+    }
+
+    private static String jsString(String s) {
+        if (s == null) return "''";
+        StringBuilder sb = new StringBuilder(s.length() + 2);
+        sb.append('\'');
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '\\': sb.append("\\\\"); break;
+                case '\'': sb.append("\\'"); break;
+                case '\n': sb.append("\\n"); break;
+                case '\r': sb.append("\\r"); break;
+                case '\u2028': sb.append("\\u2028"); break;
+                case '\u2029': sb.append("\\u2029"); break;
+                default: sb.append(c);
+            }
+        }
+        sb.append('\'');
+        return sb.toString();
+    }
+
+    public class SaveBridge {
+        @JavascriptInterface
+        public void downloadBase64(String mime, String base64) {
+            final String m = mime;
+            final String d = base64;
+            runOnUiThread(() -> startSaveDocument(m, d));
+        }
+    }
+
+    private void startSaveDocument(String mime, String base64) {
+        if (base64 == null) return;
+        pendingSaveMime = (mime == null || mime.isEmpty())
+                ? "application/octet-stream" : mime;
+        pendingSaveBase64 = base64;
+
+        Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType(pendingSaveMime);
+        i.putExtra(Intent.EXTRA_TITLE, suggestNameFor(pendingSaveMime));
+        try {
+            startActivityForResult(i, REQ_SAVE_FILE);
+        } catch (ActivityNotFoundException e) {
+            pendingSaveBase64 = null;
+            pendingSaveMime = null;
+        }
+    }
+
+    private String suggestNameFor(String mime) {
+        if (mime == null) return "download";
+        if (mime.startsWith("text/html")) return "page.html";
+        if (mime.startsWith("text/plain")) return "note.txt";
+        if (mime.startsWith("application/json")) return "data.json";
+        if (mime.startsWith("image/png")) return "image.png";
+        if (mime.startsWith("image/jpeg")) return "image.jpg";
+        if (mime.startsWith("image/gif")) return "image.gif";
+        if (mime.startsWith("image/svg")) return "image.svg";
+        if (mime.startsWith("text/csv")) return "data.csv";
+        if (mime.startsWith("application/pdf")) return "document.pdf";
+        return "download";
+    }
+
+    // ------------------------------------------------------------------ direct file
 
     private void openDirectFile(Uri fileUri) {
         String name = queryDisplayName(fileUri);
@@ -153,12 +311,26 @@ public class WebViewActivity extends Activity {
             InputStream in = getContentResolver().openInputStream(fileUri);
             if (in == null) { finish(); return; }
             String raw = readAll(in);
-            String html = ReaderRenderer.render(currentExt, raw);
-            web.loadDataWithBaseURL(null, html, "text/html", "utf-8", null);
+
+            // FIX: stable base URL → stable origin for localStorage even for ACTION_VIEW files.
+            String baseUrl = "https://hashiru.local/" + Uri.encode(fileUri.toString()) + "/";
+
+            if (currentExt.equals("html") || currentExt.equals("htm")) {
+                // FIX: render HTML as HTML, not escaped.
+                web.loadDataWithBaseURL(baseUrl, raw, "text/html", "utf-8", null);
+            } else if (isReader) {
+                String html = ReaderRenderer.render(currentExt, raw);
+                web.loadDataWithBaseURL(baseUrl, html, "text/html", "utf-8", null);
+            } else {
+                String escaped = ReaderRenderer.render("txt", raw);
+                web.loadDataWithBaseURL(baseUrl, escaped, "text/html", "utf-8", null);
+            }
         } catch (IOException e) {
             finish();
         }
     }
+
+    // ------------------------------------------------------------------ helpers
 
     private String extOf(String pathOrName) {
         if (pathOrName == null) return "";
@@ -201,12 +373,36 @@ public class WebViewActivity extends Activity {
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
+
         if (req == REQ_FILE_CHOOSER) {
             if (fileChooserCallback != null) {
                 Uri[] result = WebChromeClient.FileChooserParams.parseResult(res, data);
                 fileChooserCallback.onReceiveValue(result);
                 fileChooserCallback = null;
             }
+            return;
+        }
+
+        if (req == REQ_SAVE_FILE) {
+            if (res == RESULT_OK && data != null && data.getData() != null
+                    && pendingSaveBase64 != null) {
+                Uri target = data.getData();
+                try {
+                    getContentResolver().takePersistableUriPermission(target,
+                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                } catch (Exception ignored) {}
+                try {
+                    OutputStream os = getContentResolver().openOutputStream(target, "w");
+                    if (os != null) {
+                        byte[] bytes = Base64.decode(pendingSaveBase64, Base64.DEFAULT);
+                        os.write(bytes);
+                        os.flush();
+                        os.close();
+                    }
+                } catch (IOException ignored) {}
+            }
+            pendingSaveBase64 = null;
+            pendingSaveMime = null;
         }
     }
 
@@ -220,10 +416,6 @@ public class WebViewActivity extends Activity {
         web.evaluateJavascript(js, null);
     }
 
-    /**
-     * Reader-only. Pushes rendered markdown below the transparent status bar at rest.
-     * Content still flows under the bar while scrolling.
-     */
     private void injectReaderSafeAreaPadding() {
         if (statusBarHeight <= 0) return;
         float density = getResources().getDisplayMetrics().density;
@@ -269,7 +461,6 @@ public class WebViewActivity extends Activity {
         WindowManager.LayoutParams lp = win.getAttributes();
 
         if (orientation == Configuration.ORIENTATION_LANDSCAPE) {
-            // Full-bleed for both reader and HTML — hides status, nav, cuts into notch.
             decor.setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                     | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
@@ -288,9 +479,7 @@ public class WebViewActivity extends Activity {
             return;
         }
 
-        // Portrait
         if (isReader) {
-            // Transparent status bar, draw under it, hide nothing.
             win.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
             win.setStatusBarColor(Color.TRANSPARENT);
             win.setNavigationBarColor(BAR_COLOR_HTML);
@@ -302,7 +491,6 @@ public class WebViewActivity extends Activity {
                         WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
             }
         } else {
-            // HTML: solid bars, no edge-to-edge, no injection.
             win.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
             win.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
             win.setStatusBarColor(BAR_COLOR_HTML);
@@ -330,7 +518,8 @@ public class WebViewActivity extends Activity {
             fileChooserCallback.onReceiveValue(null);
             fileChooserCallback = null;
         }
-        if (server != null) { server.stop(); server = null; }
+        // FIX: do NOT stop the LocalFileServer — it lives for the process,
+        // so the 127.0.0.1:PORT origin (and its localStorage) stays stable.
         if (web != null) { web.destroy(); web = null; }
         super.onDestroy();
     }

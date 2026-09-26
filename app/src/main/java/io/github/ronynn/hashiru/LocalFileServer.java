@@ -4,11 +4,11 @@ import android.content.ContentResolver;
 import android.database.Cursor;
 import android.net.Uri;
 import android.provider.DocumentsContract;
+import android.util.Log;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -18,48 +18,84 @@ import fi.iki.elonen.NanoHTTPD;
 
 public class LocalFileServer extends NanoHTTPD {
 
-    private final Uri treeUri;
-    private final ContentResolver resolver;
-    private final String rootDocId;
+    private static final String TAG = "LocalFileServer";
+
+    // FIX: fixed port → the WebView origin (http://127.0.0.1:PORT) never changes,
+    // so localStorage / IndexedDB / cookies survive across launches and rotations.
+    private static final int PORT = 17463;
+
+    private static LocalFileServer instance;
+
+    private Uri treeUri;
+    private ContentResolver resolver;
+    private String rootDocId;
 
     private static final Set<String> READER_EXTS = new HashSet<>(
             Arrays.asList("md", "markdown", "txt", "org", "twee"));
 
-    public LocalFileServer(Uri treeUri, ContentResolver resolver) {
-        super("127.0.0.1", 0); // ephemeral port assigned by OS
-        this.treeUri = treeUri;
-        this.resolver = resolver;
-        this.rootDocId = DocumentsContract.getTreeDocumentId(treeUri);
+    private LocalFileServer() {
+        super("127.0.0.1", PORT);
+    }
+
+    /**
+     * FIX: shared instance. First caller starts it; subsequent callers just
+     * retarget the tree. Do NOT stop() this from activities — it must outlive them.
+     */
+    public static synchronized LocalFileServer acquire(Uri treeUri, ContentResolver cr)
+            throws IOException {
+        if (instance == null) {
+            instance = new LocalFileServer();
+            instance.start(SOCKET_READ_TIMEOUT, false);
+        }
+        instance.treeUri = treeUri;
+        instance.resolver = cr;
+        instance.rootDocId = DocumentsContract.getTreeDocumentId(treeUri);
+        return instance;
+    }
+
+    public String origin() {
+        return "http://127.0.0.1:" + PORT;
     }
 
     @Override
     public Response serve(IHTTPSession session) {
+        if (treeUri == null || resolver == null) {
+            return plain(Response.Status.SERVICE_UNAVAILABLE, "No tree selected");
+        }
+
+        // NanoHTTPD already percent-decodes session.getUri(); do NOT decode again.
         String uri = session.getUri();
         if (uri.startsWith("/")) uri = uri.substring(1);
 
+        // FIX: check traversal per-segment (allows names like "notes..txt").
+        for (String seg : uri.split("/")) {
+            if ("..".equals(seg)) return plain(Response.Status.FORBIDDEN, "Forbidden");
+        }
+
         try {
-            uri = URLDecoder.decode(uri, "UTF-8");
-        } catch (Exception ignored) {}
-
-        if (uri.contains("..")) return plain(Response.Status.FORBIDDEN, "Forbidden");
-
-        // Root: serve index.html if present
-        if (uri.isEmpty()) {
-            String id = findChild(rootDocId, "index.html");
-            if (id != null) return serveDoc(id);
-            return newFixedLengthResponse(Response.Status.OK, "text/html",
-                    "<html><body><h3>No index.html in root</h3></body></html>");
+            if (uri.isEmpty()) {
+                return serveDirOrIndex(rootDocId, "/");
+            }
+            String cur = rootDocId;
+            for (String part : uri.split("/")) {
+                if (part.isEmpty()) continue;
+                String next = findChild(cur, part);
+                if (next == null) return plain(Response.Status.NOT_FOUND, "Not found: " + uri);
+                cur = next;
+            }
+            return serveDoc(cur, uri);
+        } catch (Exception e) {
+            Log.w(TAG, "serve failed for " + uri, e);
+            return plain(Response.Status.INTERNAL_ERROR,
+                    e.getMessage() == null ? "error" : e.getMessage());
         }
+    }
 
-        // Walk the tree
-        String cur = rootDocId;
-        for (String part : uri.split("/")) {
-            if (part.isEmpty()) continue;
-            String next = findChild(cur, part);
-            if (next == null) return plain(Response.Status.NOT_FOUND, "Not found: " + uri);
-            cur = next;
-        }
-        return serveDoc(cur);
+    // FIX: serve index.html when a directory (root or subfolder) is requested.
+    private Response serveDirOrIndex(String dirDocId, String pathForError) {
+        String id = findChild(dirDocId, "index.html");
+        if (id != null) return serveDoc(id, pathForError);
+        return plain(Response.Status.NOT_FOUND, "No index.html at " + pathForError);
     }
 
     private String findChild(String parentDocId, String name) {
@@ -80,7 +116,7 @@ public class LocalFileServer extends NanoHTTPD {
         return null;
     }
 
-    private Response serveDoc(String docId) {
+    private Response serveDoc(String docId, String pathForError) {
         Uri docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId);
         String mime = null;
         String name = null;
@@ -100,17 +136,13 @@ public class LocalFileServer extends NanoHTTPD {
             }
         }
 
-        if (mime == null || DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) {
-            return plain(Response.Status.NOT_FOUND, "Not a file");
+        if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) {
+            return serveDirOrIndex(docId, pathForError);
         }
 
-        // Reader path: .md, .markdown, .txt, .org, .twee
-        String ext = "";
-        if (name != null) {
-            int dot = name.lastIndexOf('.');
-            if (dot >= 0) ext = name.substring(dot + 1).toLowerCase();
-        }
+        String ext = extensionOf(name);
 
+        // Reader rendering path (markdown / plain text)
         if (READER_EXTS.contains(ext)) {
             try {
                 InputStream in = resolver.openInputStream(docUri);
@@ -126,8 +158,10 @@ public class LocalFileServer extends NanoHTTPD {
             }
         }
 
-        // Default: serve the file as-is
-        if ("application/octet-stream".equals(mime)) {
+        // FIX: force text/html for .html/.htm even if SAF misreports them.
+        if (ext.equals("html") || ext.equals("htm")) {
+            mime = "text/html; charset=utf-8";
+        } else if (mime == null || "application/octet-stream".equals(mime)) {
             mime = guessMime(name);
         }
 
@@ -136,11 +170,17 @@ public class LocalFileServer extends NanoHTTPD {
             if (in == null) return plain(Response.Status.NOT_FOUND, "Cannot open");
             Response r = newChunkedResponse(Response.Status.OK, mime, in);
             r.addHeader("Cache-Control", "no-store");
-            r.addHeader("Access-Control-Allow-Origin", "*");
             return r;
         } catch (IOException e) {
             return plain(Response.Status.INTERNAL_ERROR, e.getMessage());
         }
+    }
+
+    private static String extensionOf(String name) {
+        if (name == null) return "";
+        int dot = name.lastIndexOf('.');
+        if (dot < 0) return "";
+        return name.substring(dot + 1).toLowerCase();
     }
 
     private String readAll(InputStream in) throws IOException {
@@ -153,13 +193,13 @@ public class LocalFileServer extends NanoHTTPD {
     }
 
     private Response plain(Response.Status s, String body) {
-        return newFixedLengthResponse(s, "text/plain", body);
+        return newFixedLengthResponse(s, "text/plain; charset=utf-8", body == null ? "" : body);
     }
 
     private String guessMime(String name) {
         if (name == null) return "application/octet-stream";
         String n = name.toLowerCase();
-        if (n.endsWith(".html") || n.endsWith(".htm")) return "text/html";
+        if (n.endsWith(".html") || n.endsWith(".htm")) return "text/html; charset=utf-8";
         if (n.endsWith(".js") || n.endsWith(".mjs")) return "application/javascript";
         if (n.endsWith(".css")) return "text/css";
         if (n.endsWith(".json")) return "application/json";
@@ -174,7 +214,7 @@ public class LocalFileServer extends NanoHTTPD {
         if (n.endsWith(".ttf")) return "font/ttf";
         if (n.endsWith(".wasm")) return "application/wasm";
         if (n.endsWith(".xml")) return "application/xml";
-        if (n.endsWith(".txt")) return "text/plain";
+        if (n.endsWith(".txt")) return "text/plain; charset=utf-8";
         return "application/octet-stream";
     }
 }
