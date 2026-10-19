@@ -1,1 +1,1 @@
-hashiru (走る) is a HTML runner app for android for quickly building and setting up custom apps for personal use, inspired by Termux-GUI and APDE
+hashiru (走る) is a markdown reader/editor and local HTML runner app

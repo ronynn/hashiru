@@ -30,8 +30,10 @@ public class LocalFileServer extends NanoHTTPD {
     private Context appContext;
     private String rootDocId;
 
+    // csv added: server renders it through ReaderRenderer → text/html → WebView
+    // never sees text/csv or octet-stream, so setDownloadListener won't fire.
     private static final Set<String> READER_EXTS = new HashSet<>(
-            Arrays.asList("md", "markdown", "txt", "org", "twee"));
+            Arrays.asList("md", "markdown", "txt", "org", "twee", "csv"));
 
     private LocalFileServer() { super("127.0.0.1", PORT); }
 
@@ -50,10 +52,6 @@ public class LocalFileServer extends NanoHTTPD {
 
     public String origin() { return "http://127.0.0.1:" + PORT; }
 
-    // ==================================================================
-    //  Request entry point
-    // ==================================================================
-
     @Override
     public Response serve(IHTTPSession session) {
         if (treeUri == null || resolver == null)
@@ -62,11 +60,9 @@ public class LocalFileServer extends NanoHTTPD {
         String uri = session.getUri();
         if (uri.startsWith("/")) uri = uri.substring(1);
 
-        // Reject path traversal per-segment (allows "notes..txt" filenames).
         for (String seg : uri.split("/"))
             if ("..".equals(seg)) return plain(Response.Status.FORBIDDEN, "Forbidden");
 
-        // Reader-only query params.
         int sbhDp = 0;
         boolean blur = true;
         try {
@@ -96,10 +92,6 @@ public class LocalFileServer extends NanoHTTPD {
                     e.getMessage() == null ? "error" : e.getMessage());
         }
     }
-
-    // ==================================================================
-    //  Directory / file dispatch
-    // ==================================================================
 
     private Response serveDirOrIndex(String dirDocId, String pathForError,
                                      int sbhDp, boolean blur, IHTTPSession session) {
@@ -186,7 +178,6 @@ public class LocalFileServer extends NanoHTTPD {
             }
         }
 
-        // Force text/html for .html/.htm even if SAF misreports.
         if (ext.equals("html") || ext.equals("htm"))
             mime = "text/html; charset=utf-8";
         else if (mime == null || "application/octet-stream".equals(mime))
@@ -200,7 +191,6 @@ public class LocalFileServer extends NanoHTTPD {
                 r.addHeader("ETag", etag);
                 r.addHeader("Cache-Control", "no-cache");
             } else {
-                // Provider doesn't expose lastModified → can't revalidate safely.
                 r.addHeader("Cache-Control", "no-store");
             }
             return r;
@@ -208,10 +198,6 @@ public class LocalFileServer extends NanoHTTPD {
             return plain(Response.Status.INTERNAL_ERROR, e.getMessage());
         }
     }
-
-    // ==================================================================
-    //  Helpers
-    // ==================================================================
 
     private static String headerIgnoreCase(IHTTPSession session, String name) {
         if (session == null) return null;
@@ -260,6 +246,7 @@ public class LocalFileServer extends NanoHTTPD {
         if (n.endsWith(".wasm")) return "application/wasm";
         if (n.endsWith(".xml")) return "application/xml";
         if (n.endsWith(".txt")) return "text/plain; charset=utf-8";
+        if (n.endsWith(".csv")) return "text/csv; charset=utf-8";
         return "application/octet-stream";
     }
 }
