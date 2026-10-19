@@ -24,15 +24,36 @@
             android:name=".WebViewActivity"
             android:exported="true"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:windowSoftInputMode="adjustResize"
             android:theme="@style/WebViewTheme">
 
+            <!-- MIME-based: .md / .markdown / .txt from any file manager -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" android:mimeType="text/plain" />
+                <data android:scheme="file"    android:mimeType="text/plain" />
                 <data android:scheme="content" android:mimeType="text/markdown" />
                 <data android:scheme="file"    android:mimeType="text/markdown" />
                 <data android:scheme="content" android:mimeType="text/x-markdown" />
                 <data android:scheme="file"    android:mimeType="text/x-markdown" />
+            </intent-filter>
+
+            <!-- Extension fallback for file managers that don't send proper MIME -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.txt" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.md" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.markdown" />
             </intent-filter>
         </activity>
     </application>

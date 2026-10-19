@@ -52,7 +52,6 @@ public class WebViewActivity extends Activity {
     private static final String POS_PREFS = "hashiru_positions";
     private static final int REQ_FILE_CHOOSER = 2001;
     private static final int REQ_SAVE_FILE = 2002;
-    private static final int REQ_NOTIF_PERM = 2003;
 
     private static final int BAR_COLOR_HTML = 0xFF1A1A1A;
     private static final String CHANNEL_ID = "hashiru_media";
@@ -82,11 +81,11 @@ public class WebViewActivity extends Activity {
     private String pendingSaveMime;
     private String pendingSaveBase64;
 
-    /** Scroll position captured when edit mode was entered (from JS). */
     private int editStartScrollY = 0;
 
     private MediaSession mediaSession;
     private boolean mediaPlaying = false;
+    private String currentMediaTitle = "Media";
 
     private final BroadcastReceiver mediaCmdReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context ctx, Intent i) {
@@ -105,14 +104,9 @@ public class WebViewActivity extends Activity {
         settings = ReaderSettings.load(this);
         statusBarHeight = getStatusBarHeight();
 
-        if (Build.VERSION.SDK_INT >= 33) {
-            if (checkSelfPermission("android.permission.POST_NOTIFICATIONS")
-                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(
-                        new String[]{"android.permission.POST_NOTIFICATIONS"}, REQ_NOTIF_PERM);
-            }
-        }
-
+        // Register media-command receiver. No POST_NOTIFICATIONS prompt —
+        // the notification silently fails on 13+ without it, which is fine;
+        // MediaSession callbacks still work for hardware buttons.
         IntentFilter filter = new IntentFilter(ACTION_MEDIA_CMD);
         if (Build.VERSION.SDK_INT >= 33)
             registerReceiver(mediaCmdReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
@@ -131,7 +125,6 @@ public class WebViewActivity extends Activity {
         s.setAllowFileAccess(false);
         s.setAllowFileAccessFromFileURLs(false);
         s.setAllowUniversalAccessFromFileURLs(false);
-        // Cache enabled so eruda + HTML app assets survive across pages.
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
         s.setMediaPlaybackRequiresUserGesture(false);
         s.setSupportZoom(true);
@@ -233,28 +226,24 @@ public class WebViewActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        // Hot-reload if settings changed while this activity was paused.
         ReaderSettings fresh = ReaderSettings.load(this);
         boolean changed = !fresh.theme.equals(settings.theme)
                 || !fresh.font.equals(settings.font)
-                || fresh.fontSize != settings.fontSize
-                || fresh.readTxtAsMd != settings.readTxtAsMd;
+                || fresh.fontSize != settings.fontSize;
         settings = fresh;
         if (changed && isReader && web != null) {
             reloadCurrentFile();
             applyOrientation(getResources().getConfiguration().orientation);
         }
-        if (!mediaPlaying) {
-            // Eruda might have been toggled in MainActivity; re-inject if enabled.
-            injectEruda();
-        }
+        if (!mediaPlaying) injectEruda();
     }
 
     // ==================================================================
-    //  Edit save / reload bridge
+    //  JS bridge (downloads, edit save, media)
     // ==================================================================
 
     public class SaveBridge {
+
         @JavascriptInterface
         public void downloadBase64(String mime, String base64) {
             final String m = mime, d = base64;
@@ -277,7 +266,39 @@ public class WebViewActivity extends Activity {
             runOnUiThread(WebViewActivity.this::reloadCurrentFile);
             return true;
         }
+
+        // ---- Media hooks (previously on the Activity — that was the bug) ----
+
+        @JavascriptInterface
+        public void onMediaPlay(final String title) {
+            runOnUiThread(() -> {
+                mediaPlaying = true;
+                currentMediaTitle = (title == null || title.isEmpty()) ? "Media" : title;
+                ensureMediaSession();
+                showOrUpdateMediaNotification(currentMediaTitle, true);
+            });
+        }
+
+        @JavascriptInterface
+        public void onMediaPause() {
+            runOnUiThread(() -> {
+                mediaPlaying = false;
+                showOrUpdateMediaNotification(currentMediaTitle, false);
+            });
+        }
+
+        @JavascriptInterface
+        public void onMediaStop() {
+            runOnUiThread(() -> {
+                mediaPlaying = false;
+                stopMediaNotification();
+            });
+        }
     }
+
+    // ==================================================================
+    //  Save / reload
+    // ==================================================================
 
     private boolean saveSourceSync(String source) {
         if (source == null) return false;
@@ -357,24 +378,53 @@ public class WebViewActivity extends Activity {
 
     private void injectReaderStatusBar(int orientation) {
         if (web == null) return;
-        int topPad = orientation == Configuration.ORIENTATION_PORTRAIT ? statusBarHeight : 0;
+
+        float density = getResources().getDisplayMetrics().density;
+        int topPadCss = 0;
+        if (orientation == Configuration.ORIENTATION_PORTRAIT && statusBarHeight > 0) {
+            topPadCss = Math.round(statusBarHeight / density);  // px → dp (CSS px in this viewport)
+        }
+
+        if (topPadCss <= 0) {
+            String cleanup = "(function(){"
+                + "var s=document.getElementById('hashiru-statusblur-style');if(s)s.remove();"
+                + "var b=document.getElementById('hashiru-statusblur');if(b)b.remove();"
+                + "})();";
+            web.evaluateJavascript(cleanup, null);
+            return;
+        }
+
+        int blurHeight = topPadCss + 20;
 
         String js = "(function(){"
-            + "var old=document.getElementById('hashiru-statusblur');"
-            + "if(old)old.parentNode.removeChild(old);"
             + "var oldS=document.getElementById('hashiru-statusblur-style');"
             + "if(oldS)oldS.parentNode.removeChild(oldS);"
-            + "var sbh=" + topPad + ";"
-            + "if(sbh<=0)return;"
+            + "var oldB=document.getElementById('hashiru-statusblur');"
+            + "if(oldB)oldB.parentNode.removeChild(oldB);"
+
             + "var st=document.createElement('style');"
             + "st.id='hashiru-statusblur-style';"
-            + "st.textContent='body{padding-top:'+sbh+'px !important;}';"
+            + "st.textContent="
+            +   "'body{padding-top:" + blurHeight + "px !important;}' +"
+            +   "'#hashiru-editor{padding-top:" + (blurHeight + 12) + "px !important;}' +"
+            +   "'#hashiru-done{top:" + (blurHeight + 8) + "px !important;' +"
+            +     "'right:16px !important;bottom:auto !important;width:44px !important;' +"
+            +     "'height:44px !important;border-radius:22px !important;padding:0 !important;' +"
+            +     "'font-size:20px !important;}';"
             + "document.head.appendChild(st);"
+
             + "var d=document.createElement('div');"
             + "d.id='hashiru-statusblur';"
-            + "d.style.cssText='position:fixed;top:0;left:0;right:0;height:'+sbh+'px;"
-            +   "backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);"
-            +   "background:rgba(0,0,0,0.10);z-index:9000;pointer-events:none;';"
+            + "d.style.cssText='position:fixed;top:0;left:0;right:0;"
+            +   "height:" + blurHeight + "px;"
+            +   "-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);"
+            +   "background:linear-gradient(to bottom,"
+            +     "rgba(0,0,0,0.15) 0%,rgba(0,0,0,0.08) 50%,rgba(0,0,0,0) 100%);"
+            +   "-webkit-mask-image:linear-gradient(to bottom,"
+            +     "black 0%,black 55%,transparent 100%);"
+            +   "mask-image:linear-gradient(to bottom,"
+            +     "black 0%,black 55%,transparent 100%);"
+            +   "z-index:9700;pointer-events:none;';"
             + "document.body.appendChild(d);"
             + "})();";
         web.evaluateJavascript(js, null);
@@ -391,11 +441,12 @@ public class WebViewActivity extends Activity {
     }
 
     // ==================================================================
-    //  Eruda
+    //  Eruda (HTML apps only — skipped in readers)
     // ==================================================================
 
     private void injectEruda() {
         if (web == null || settings == null || !settings.erudaEnabled) return;
+        if (isReader) return;
         String js = "(function(){"
             + "if(window.__hashiruErudaLoaded)return;"
             + "window.__hashiruErudaLoaded=true;"
@@ -409,7 +460,7 @@ public class WebViewActivity extends Activity {
     }
 
     // ==================================================================
-    //  Media controls (notification / status bar)
+    //  Media (MediaSession + notification, no permission prompt)
     // ==================================================================
 
     private void ensureMediaSession() {
@@ -419,9 +470,9 @@ public class WebViewActivity extends Activity {
         mediaSession.setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS
                 | MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS);
         mediaSession.setCallback(new MediaSession.Callback() {
-            @Override public void onPlay() { sendJsMediaCmd("play"); }
+            @Override public void onPlay()  { sendJsMediaCmd("play"); }
             @Override public void onPause() { sendJsMediaCmd("pause"); }
-            @Override public void onStop() { sendJsMediaCmd("stop"); stopMediaNotification(); }
+            @Override public void onStop()  { sendJsMediaCmd("stop"); stopMediaNotification(); }
         });
         mediaSession.setActive(true);
     }
@@ -440,59 +491,63 @@ public class WebViewActivity extends Activity {
 
     private void injectMediaHooks() {
         if (web == null) return;
+        // Hooks existing audio/video and observes future ones. Notifies native
+        // via __HashiruNative.onMediaPlay / onMediaPause / onMediaStop.
         String js = "(function(){"
             + "function hook(m){"
             + "  if(m.__hashiruHooked)return;m.__hashiruHooked=true;"
             + "  m.addEventListener('play',function(){"
-            + "    var t=m.getAttribute('title')||document.title||'Media';"
-            + "    try{__HashiruNative.onMediaPlay(t);}catch(e){}});"
-            + "  m.addEventListener('pause',function(){try{__HashiruNative.onMediaPause();}catch(e){}});"
-            + "  m.addEventListener('ended',function(){try{__HashiruNative.onMediaPause();}catch(e){}});"
+            + "    var t=m.getAttribute('title')||m.getAttribute('data-title')"
+            + "         ||document.title||'Media';"
+            + "    try{__HashiruNative.onMediaPlay(t);}catch(e){}"
+            + "  });"
+            + "  m.addEventListener('pause',function(){"
+            + "    if(m.ended)return;"
+            + "    try{__HashiruNative.onMediaPause();}catch(e){}"
+            + "  });"
+            + "  m.addEventListener('ended',function(){"
+            + "    try{__HashiruNative.onMediaStop();}catch(e){}"
+            + "  });"
+            + "  m.addEventListener('loadedmetadata',function(){"
+            + "    if(!m.paused)try{__HashiruNative.onMediaPlay("
+            + "      m.getAttribute('title')||document.title||'Media');"
+            + "    }catch(e){}"
+            + "  });"
             + "}"
             + "document.querySelectorAll('audio,video').forEach(hook);"
             + "if(!window.__hashiruMediaObserver){"
             + "  window.__hashiruMediaObserver=new MutationObserver(function(ms){"
-            + "    ms.forEach(function(m){m.addedNodes.forEach(function(n){"
+            + "    ms.forEach(function(mo){mo.addedNodes.forEach(function(n){"
+            + "      if(!n||!n.nodeName)return;"
             + "      if(n.nodeName==='AUDIO'||n.nodeName==='VIDEO')hook(n);"
+            + "      else if(n.querySelectorAll) n.querySelectorAll('audio,video').forEach(hook);"
             + "    });});"
             + "  });"
-            + "  window.__hashiruMediaObserver.observe(document.body,{childList:true,subtree:true});"
+            + "  window.__hashiruMediaObserver.observe(document.body,"
+            + "    {childList:true,subtree:true});"
             + "}"
             + "})();";
         web.evaluateJavascript(js, null);
     }
 
-    @JavascriptInterface
-    public void onMediaPlay(final String title) {
-        runOnUiThread(() -> {
-            mediaPlaying = true;
-            ensureMediaSession();
-            showOrUpdateMediaNotification(title, true);
-        });
-    }
-
-    @JavascriptInterface
-    public void onMediaPause() {
-        runOnUiThread(() -> {
-            mediaPlaying = false;
-            showOrUpdateMediaNotification("Media", false);
-        });
-    }
-
     private void showOrUpdateMediaNotification(String title, boolean playing) {
+        if (Build.VERSION.SDK_INT < 21) return;
         ensureMediaSession();
         createNotificationChannel();
 
         int piFlags = PendingIntent.FLAG_UPDATE_CURRENT;
         if (Build.VERSION.SDK_INT >= 23) piFlags |= PendingIntent.FLAG_IMMUTABLE;
 
-        Intent toggleI = new Intent(ACTION_MEDIA_CMD).setPackage(getPackageName()).putExtra("cmd", "toggle");
+        Intent toggleI = new Intent(ACTION_MEDIA_CMD)
+                .setPackage(getPackageName()).putExtra("cmd", "toggle");
         PendingIntent togglePi = PendingIntent.getBroadcast(this, 0, toggleI, piFlags);
 
-        Intent stopI = new Intent(ACTION_MEDIA_CMD).setPackage(getPackageName()).putExtra("cmd", "stop");
+        Intent stopI = new Intent(ACTION_MEDIA_CMD)
+                .setPackage(getPackageName()).putExtra("cmd", "stop");
         PendingIntent stopPi = PendingIntent.getBroadcast(this, 1, stopI, piFlags);
 
-        Notification.MediaStyle style = new Notification.MediaStyle().setShowActionsInCompactView(0);
+        Notification.MediaStyle style = new Notification.MediaStyle()
+                .setShowActionsInCompactView(0);
         if (mediaSession != null) style.setMediaSession(mediaSession.getSessionToken());
 
         Notification.Builder b;
@@ -511,7 +566,12 @@ public class WebViewActivity extends Activity {
                  playing ? "Pause" : "Play", togglePi)
          .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopPi);
 
-        notificationManager().notify(NOTIF_ID, b.build());
+        try {
+            notificationManager().notify(NOTIF_ID, b.build());
+        } catch (SecurityException e) {
+            // POST_NOTIFICATIONS not granted on 13+ — silently drop.
+            Log.d(TAG, "notification blocked (missing POST_NOTIFICATIONS)");
+        }
 
         if (mediaSession != null) {
             mediaSession.setMetadata(new MediaMetadata.Builder()
@@ -540,8 +600,12 @@ public class WebViewActivity extends Activity {
         }
     }
 
+    @SuppressWarnings("deprecation")
     private NotificationManager notificationManager() {
-        return (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        if (Build.VERSION.SDK_INT >= 23) {
+            return getSystemService(NotificationManager.class);
+        }
+        return (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
     }
 
     private void createNotificationChannel() {
@@ -716,7 +780,6 @@ public class WebViewActivity extends Activity {
         return uri.getLastPathSegment();
     }
 
-    /** Reads up to MAX_READER_BYTES; if over, truncates with a marker. */
     private String readAllCapped(InputStream in) throws IOException {
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         byte[] buf = new byte[8192];

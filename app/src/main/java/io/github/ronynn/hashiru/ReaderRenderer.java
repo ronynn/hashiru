@@ -20,8 +20,8 @@ public class ReaderRenderer {
     private static final HtmlRenderer RENDERER = HtmlRenderer.builder().extensions(EXTENSIONS).build();
 
     public static String render(String ext, String raw, ReaderSettings settings) {
-        boolean isMd = ext.equals("md") || ext.equals("markdown")
-                || (ext.equals("txt") && settings.readTxtAsMd);
+        // .txt always renders as Markdown now — .md / .markdown / .txt are all prose.
+        boolean isMd = ext.equals("md") || ext.equals("markdown") || ext.equals("txt");
 
         String body;
         if (isMd) {
@@ -44,11 +44,11 @@ public class ReaderRenderer {
         String sourceJson = jsonEscape(rawSource);
 
         return "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
-             + "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+             + "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">"
              + "<style>" + css + "</style></head><body>"
              + "<div id=\"hashiru-view\">" + body + "</div>"
              + "<textarea id=\"hashiru-editor\" spellcheck=\"false\" autocorrect=\"off\" autocomplete=\"off\"></textarea>"
-             + "<button id=\"hashiru-done\" type=\"button\">✓ Done</button>"
+             + "<button id=\"hashiru-done\" type=\"button\">✓</button>"
              + "<script id=\"hashiru-source\" type=\"application/json\">" + sourceJson + "</script>"
              + "<script>" + EDIT_SCRIPT + "</script>"
              + "</body></html>";
@@ -79,13 +79,15 @@ public class ReaderRenderer {
 
     private static String fontFamily(String f) {
         switch (f) {
-            case "condensed": return "'Roboto Condensed','Arial Narrow',sans-serif-condensed,sans-serif";
-            case "light":     return "'Roboto Light',sans-serif-light,sans-serif";
-            case "medium":    return "'Roboto Medium',sans-serif-medium,sans-serif";
-            case "serif":     return "'Noto Serif',Georgia,'Times New Roman',serif";
-            case "mono":      return "'Droid Sans Mono',ui-monospace,Menlo,Consolas,monospace";
-            case "cursive":   return "casual,cursive";
-            default:          return "Roboto,-apple-system,'Segoe UI',sans-serif";
+            case "sans-light":     return "sans-serif-light,Roboto,sans-serif";
+            case "sans-thin":      return "sans-serif-thin,sans-serif-light,sans-serif";
+            case "sans-medium":    return "sans-serif-medium,Roboto,sans-serif";
+            case "sans-black":     return "sans-serif-black,sans-serif";
+            case "sans-condensed": return "sans-serif-condensed,'Roboto Condensed','Arial Narrow',sans-serif";
+            case "serif":          return "'Noto Serif',serif";
+            case "mono":           return "monospace";
+            case "cursive":        return "casual,cursive";
+            default:               return "sans-serif,Roboto,-apple-system,'Segoe UI',sans-serif";
         }
     }
 
@@ -126,15 +128,19 @@ public class ReaderRenderer {
             + "em{color:" + p.em + ";}"
             + "del{color:" + p.del + ";}"
             + "p{margin:.6em 0;}"
+            // Fullscreen editor, dynamic viewport height so keyboard resize doesn't jump scroll
             + "#hashiru-editor{position:fixed;top:0;left:0;right:0;bottom:0;"
-            +   "width:100%;height:100%;background:" + p.bg + ";color:" + p.text + ";"
+            +   "width:100%;height:100vh;height:100dvh;"
+            +   "background:" + p.bg + ";color:" + p.text + ";"
             +   "font-family:ui-monospace,Menlo,Consolas,monospace;font-size:15px;line-height:1.5;"
-            +   "border:none;outline:none;padding:20px;padding-top:60px;box-sizing:border-box;"
-            +   "resize:none;z-index:9500;display:none;}"
-            + "#hashiru-done{position:fixed;bottom:20px;right:20px;z-index:10000;"
-            +   "padding:12px 20px;border-radius:24px;border:none;"
-            +   "background:" + p.accent + ";color:#fff;font-size:15px;font-weight:600;"
-            +   "box-shadow:0 4px 12px rgba(0,0,0,.3);display:none;cursor:pointer;}";
+            +   "border:none;outline:none;box-sizing:border-box;"
+            +   "padding:20px;padding-top:60px;resize:none;display:none;"
+            +   "z-index:9500;}"
+            // Small circular checkmark, top-right. Real position overridden by injection.
+            + "#hashiru-done{position:fixed;top:20px;right:16px;z-index:9600;"
+            +   "width:44px;height:44px;border-radius:22px;padding:0;border:none;"
+            +   "background:" + p.accent + ";color:#fff;font-size:20px;font-weight:700;"
+            +   "box-shadow:0 2px 8px rgba(0,0,0,.35);display:none;cursor:pointer;}";
     }
 
     private static class Palette {
@@ -243,34 +249,45 @@ public class ReaderRenderer {
 
     private static final String EDIT_SCRIPT =
         "(function(){"
-      + "var editing=false,lastTap=0;"
+      + "var editing=false;"
       + "var view=document.getElementById('hashiru-view');"
       + "var editor=document.getElementById('hashiru-editor');"
       + "var doneBtn=document.getElementById('hashiru-done');"
       + "var srcEl=document.getElementById('hashiru-source');"
       + "if(!view||!editor||!doneBtn)return;"
       + "var current=srcEl?JSON.parse(srcEl.textContent):'';"
+      + "var tapTimes=[];"
       + "function enterEdit(){"
       + "  if(editing)return;"
       + "  editing=true;editor.value=current;"
       + "  view.style.display='none';editor.style.display='block';"
-      + "  doneBtn.style.display='block';window.scrollTo(0,0);"
-      + "  setTimeout(function(){editor.focus();},50);"
+      + "  doneBtn.style.display='block';"
+      + "  try{document.body.style.setProperty('padding-top','0','important');}catch(e){}"
+      + "  setTimeout(function(){"
+      + "    try{editor.focus();editor.setSelectionRange(0,0);editor.scrollTop=0;}catch(e){}"
+      + "  },60);"
       + "}"
       + "function exitEdit(save){"
       + "  if(!editing)return;editing=false;"
       + "  var v=editor.value;"
       + "  editor.style.display='none';view.style.display='';doneBtn.style.display='none';"
+      + "  try{document.body.style.removeProperty('padding-top');}catch(e){}"
       + "  if(save&&v!==current){current=v;"
       + "    try{__HashiruNative.saveAndReload(v);}catch(e){}}"
       + "}"
+      // Triple-tap detection (3 taps within 500ms). Also cancels any text
+      // selection the browser might have kicked off on the third tap.
       + "view.addEventListener('touchend',function(e){"
       + "  if(e.changedTouches.length!==1)return;"
       + "  var now=Date.now();"
-      + "  if(now-lastTap<320){"
+      + "  tapTimes.push(now);"
+      + "  while(tapTimes.length&&now-tapTimes[0]>500)tapTimes.shift();"
+      + "  if(tapTimes.length>=3){"
+      + "    tapTimes=[];"
       + "    e.preventDefault();e.stopPropagation();"
-      + "    enterEdit();lastTap=0;"
-      + "  }else{lastTap=now;}"
+      + "    try{window.getSelection().removeAllRanges();}catch(x){}"
+      + "    enterEdit();"
+      + "  }"
       + "},{passive:false});"
       + "doneBtn.addEventListener('click',function(){exitEdit(true);});"
       + "})();";

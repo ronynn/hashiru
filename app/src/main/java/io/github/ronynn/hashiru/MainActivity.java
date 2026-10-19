@@ -10,6 +10,7 @@ import android.provider.DocumentsContract;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
+import android.view.Window;
 import android.widget.Button;
 import android.widget.ImageButton;
 import android.widget.ListView;
@@ -37,6 +38,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        // Kill the native ActionBar so only the custom header shows.
+        requestWindowFeature(Window.FEATURE_NO_TITLE);
         setContentView(R.layout.activity_main);
 
         list = findViewById(R.id.list);
@@ -75,8 +78,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    // ------------------------------------------------------------ menu
-
     private void showSettingsMenu(View anchor) {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         PopupMenu pm = new PopupMenu(this, anchor);
@@ -84,10 +85,7 @@ public class MainActivity extends Activity {
         m.add(0, 1, 0, "Theme…");
         m.add(0, 2, 1, "Font…");
         m.add(0, 3, 2, "Font size…");
-        MenuItem txt = m.add(0, 4, 3, "Read .txt as Markdown");
-        txt.setCheckable(true);
-        txt.setChecked(prefs.getBoolean(ReaderSettings.KEY_READ_TXT_AS_MD, false));
-        MenuItem eruda = m.add(0, 5, 4, "Enable Eruda console");
+        MenuItem eruda = m.add(0, 4, 3, "Enable Eruda console (HTML apps)");
         eruda.setCheckable(true);
         eruda.setChecked(prefs.getBoolean(ReaderSettings.KEY_ERUDA, false));
 
@@ -97,12 +95,6 @@ public class MainActivity extends Activity {
                 case 2: showFontDialog();  return true;
                 case 3: showSizeDialog();  return true;
                 case 4: {
-                    boolean v = !item.isChecked();
-                    prefs.edit().putBoolean(ReaderSettings.KEY_READ_TXT_AS_MD, v).apply();
-                    item.setChecked(v);
-                    return true;
-                }
-                case 5: {
                     boolean v = !item.isChecked();
                     prefs.edit().putBoolean(ReaderSettings.KEY_ERUDA, v).apply();
                     item.setChecked(v);
@@ -163,8 +155,6 @@ public class MainActivity extends Activity {
         for (int i = 0; i < arr.length; i++) if (v.equals(arr[i])) return i;
         return 0;
     }
-
-    // ------------------------------------------------------------ SAF
 
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
