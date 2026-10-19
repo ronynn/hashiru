@@ -17,13 +17,19 @@ public class ReaderRenderer {
     );
 
     private static final Parser PARSER = Parser.builder().extensions(EXTENSIONS).build();
-    private static final HtmlRenderer RENDERER = HtmlRenderer.builder().extensions(EXTENSIONS).build();
 
-    /**
-     * @param sbhDp      status-bar height in CSS px; content is padded below the
-     *                   status bar by this much. 0 = landscape (no pad needed).
-     * @param blurEnabled if true, a blurred overlay is drawn over the status-bar strip.
-     */
+    // escapeHtml(true): raw HTML in source is rendered as text → no <script>,
+    //                   <iframe>, <style>, on* handlers, etc. can inject.
+    // sanitizeUrls(true): strips javascript:/vbscript:/file:/data: (non-image)
+    //                     schemes from <a href> and <img src>.
+    // Together: user content cannot execute JavaScript. Only the app's own
+    // inline EDIT_SCRIPT runs, and .html files bypass this renderer entirely.
+    private static final HtmlRenderer RENDERER = HtmlRenderer.builder()
+            .extensions(EXTENSIONS)
+            .escapeHtml(true)
+            .sanitizeUrls(true)
+            .build();
+
     public static String render(String ext, String raw,
                                 ReaderSettings settings,
                                 int sbhDp, boolean blurEnabled) {
@@ -35,6 +41,7 @@ public class ReaderRenderer {
             body = body.replace("<table>", "<div class=\"table-wrap\"><table>")
                        .replace("</table>", "</table></div>");
         } else {
+            // .org / .twee / anything else — escape by hand, wrap in <pre>
             body = "<pre class=\"plain\">" + escapeHtml(raw) + "</pre>";
         }
         return wrap(body, raw, settings, sbhDp, blurEnabled);
@@ -46,7 +53,7 @@ public class ReaderRenderer {
             case "gruvbox": return 0xFF282828;
             case "things":  return 0xFFfafafa;
             case "paper":   return 0xFFf5f1e8;
-            default:        return 0xFF282a36;   // dracula
+            default:        return 0xFF282a36;
         }
     }
 
@@ -107,9 +114,6 @@ public class ReaderRenderer {
 
     private static String themeCss(ReaderSettings s, Palette p, int sbhDp, boolean blurEnabled) {
         int size = s.fontSize;
-
-        // Content padding: always status-bar height + small aesthetic gap in
-        // portrait; 8px when landscape (immersive, no status bar).
         int topPad = sbhDp > 0 ? sbhDp + 4 : 8;
         int btnTop = sbhDp > 0 ? sbhDp + 12 : 12;
         int editorTop = sbhDp > 0 ? sbhDp + 68 : 68;
@@ -146,8 +150,6 @@ public class ReaderRenderer {
             +   "-webkit-text-size-adjust:100%;-webkit-tap-highlight-color:transparent;"
             +   "overflow-wrap:break-word;touch-action:manipulation;}"
             + "::selection{background:" + p.selectionBg + ";color:" + p.selectionFg + ";}"
-
-            // Headings — different colour per level for visual hierarchy
             + "h1,h2,h3,h4,h5,h6{line-height:1.3;margin:1em 0 .4em;font-weight:600;}"
             + "h1{color:" + p.h1 + ";font-size:1.9em;border-bottom:1px solid " + p.border + ";padding-bottom:.3em;}"
             + "h2{color:" + p.h2 + ";font-size:1.5em;border-bottom:1px solid " + p.border + ";padding-bottom:.25em;}"
@@ -155,61 +157,38 @@ public class ReaderRenderer {
             + "h4{color:" + p.h4 + ";font-size:1.1em;}"
             + "h5{color:" + p.h5 + ";font-size:1em;}"
             + "h6{color:" + p.h6 + ";font-size:1em;}"
-
-            // Links
             + "a{color:" + p.link + ";text-decoration:none;}"
             + "a:hover{text-decoration:underline;}"
-            + "a:visited{color:" + p.link + ";}"
-            + "a:active{color:" + p.link + ";}"
             + "a:focus{outline:2px solid " + p.link + ";outline-offset:2px;border-radius:2px;}"
-
-            // Inline text
             + "strong,b{color:" + p.strong + ";font-weight:600;}"
             + "em,i{color:" + p.em + ";}"
             + "del,s{color:" + p.del + ";text-decoration:line-through;}"
             + "mark{background:" + p.markBg + ";color:" + p.markFg + ";padding:0 .3em;border-radius:3px;}"
-            + "small{opacity:.85;}"
-            + "sup,sub{font-size:.8em;line-height:0;}"
-
-            // Inline code + keyboard
             + "code{background:" + p.codeBg + ";color:" + p.codeFg + ";padding:.15em .4em;border-radius:4px;"
             +   "font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.92em;}"
             + "kbd{background:" + p.kbdBg + ";color:" + p.kbdFg + ";padding:.1em .4em;border-radius:4px;"
             +   "font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.88em;"
             +   "border:1px solid " + p.border + ";}"
-
-            // Code blocks
             + "pre{background:" + p.preBg + ";padding:1em;border-radius:8px;overflow:auto;"
             +   "font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.9em;line-height:1.5;"
             +   "border:1px solid " + p.preBorder + ";}"
             + "pre.plain{white-space:pre-wrap;word-wrap:break-word;}"
             + "pre code{background:none;padding:0;color:inherit;}"
-
-            // Blockquotes
             + "blockquote{border-left:3px solid " + p.blockquoteBorder + ";padding:.2em 1em;"
             +   "color:" + p.blockquoteFg + ";margin:.6em 0;background:" + p.blockquoteBg + ";}"
             + "blockquote p:first-child{margin-top:0;}"
             + "blockquote p:last-child{margin-bottom:0;}"
-
-            // Lists + marker colour
             + "ul,ol{padding-left:1.5em;}"
             + "li{margin:.15em 0;}"
             + "ul li::marker{color:" + p.listMarker + ";}"
             + "ol li::marker{color:" + p.listMarker + ";font-weight:600;}"
-
-            // Tables
             + ".table-wrap{overflow-x:auto;max-width:100%;margin:0 0 1em;-webkit-overflow-scrolling:touch;}"
             + "table{border-collapse:collapse;min-width:100%;}"
             + "th,td{border:1px solid " + p.tableBorder + ";padding:.5em .8em;text-align:left;}"
-            + "td{color:" + p.text + ";}"
             + "th{background:" + p.thBg + ";color:" + p.thFg + ";font-weight:600;}"
-
-            // Structure
             + "hr{border:none;border-top:1px solid " + p.hr + ";margin:1.5em 0;}"
             + "img{max-width:100%;height:auto;border-radius:6px;}"
             + "p{margin:.6em 0;}"
-
-            // Editor
             + "#hashiru-editor{position:fixed;top:0;left:0;right:0;"
             +   "width:100%;height:100vh;height:100dvh;"
             +   "background:" + p.bg + ";color:" + p.text + ";"
@@ -217,8 +196,6 @@ public class ReaderRenderer {
             +   "border:none;outline:none;box-sizing:border-box;"
             +   "padding:20px;padding-top:" + editorTop + "px;padding-bottom:40vh;"
             +   "resize:none;display:none;overflow-y:auto;z-index:9500;}"
-
-            // Circular Done button
             + "#hashiru-done{position:fixed;top:" + btnTop + "px;right:16px;z-index:9600;"
             +   "width:44px;height:44px;padding:0;"
             +   "border-radius:50%;border:none;"
@@ -226,7 +203,6 @@ public class ReaderRenderer {
             +   "font-family:sans-serif;font-size:22px;font-weight:700;"
             +   "line-height:44px;text-align:center;"
             +   "box-shadow:0 2px 8px rgba(0,0,0,.35);display:none;cursor:pointer;}"
-
             + blurRule;
     }
 
@@ -248,7 +224,6 @@ public class ReaderRenderer {
     private static Palette paletteFor(String theme) {
         Palette p = new Palette();
         switch (theme) {
-
             case "nord":
                 p.bg="#2e3440"; p.text="#d8dee9";
                 p.border="#3b4252"; p.hr="#4c566a";
@@ -267,7 +242,6 @@ public class ReaderRenderer {
                 p.kbdBg="#3b4252"; p.kbdFg="#d8dee9";
                 p.selectionBg="#434c5e"; p.selectionFg="#eceff4";
                 p.accent="#88c0d0"; break;
-
             case "gruvbox":
                 p.bg="#282828"; p.text="#ebdbb2";
                 p.border="#3c3836"; p.hr="#504945";
@@ -286,9 +260,7 @@ public class ReaderRenderer {
                 p.kbdBg="#3c3836"; p.kbdFg="#ebdbb2";
                 p.selectionBg="#504945"; p.selectionFg="#ebdbb2";
                 p.accent="#b8bb26"; break;
-
             case "things":
-                // Obsidian "Things" — minimal, iOS-flavoured light theme
                 p.bg="#fafafa"; p.text="#1c1c1e";
                 p.border="#e5e5ea"; p.hr="#d1d1d6";
                 p.h1="#1c1c1e"; p.h2="#007aff"; p.h3="#5856d6";
@@ -306,9 +278,7 @@ public class ReaderRenderer {
                 p.kbdBg="#e5e5ea"; p.kbdFg="#1c1c1e";
                 p.selectionBg="#b3d7ff"; p.selectionFg="#1c1c1e";
                 p.accent="#007aff"; break;
-
             case "paper":
-                // Warm cream, book-like
                 p.bg="#f5f1e8"; p.text="#3c3c3c";
                 p.border="#d4c7b0"; p.hr="#bfb296";
                 p.h1="#5c3d1e"; p.h2="#8b4513"; p.h3="#a0522d";
@@ -326,8 +296,7 @@ public class ReaderRenderer {
                 p.kbdBg="#e8dfd0"; p.kbdFg="#3c3c3c";
                 p.selectionBg="#e8d4a8"; p.selectionFg="#3c3c3c";
                 p.accent="#a0522d"; break;
-
-            default: // dracula / "dark"
+            default:
                 p.bg="#282a36"; p.text="#f8f8f2";
                 p.border="#44475a"; p.hr="#6272a4";
                 p.h1="#ff79c6"; p.h2="#bd93f9"; p.h3="#8be9fd";
@@ -434,10 +403,23 @@ public class ReaderRenderer {
       + "function exitEdit(save){"
       + "  if(!editing)return;editing=false;"
       + "  var v=editor.value;"
-      + "  editor.style.display='none';view.style.display='';doneBtn.style.display='none';"
+      + "  editor.style.display='none';"
+      + "  view.style.display='';"
+      + "  doneBtn.style.display='none';"
       + "  try{document.body.style.removeProperty('padding-top');}catch(e){}"
-      + "  if(save&&v!==current){current=v;"
+
+      + "  if(save&&v!==current){"
+      + "    current=v;"
       + "    try{__HashiruNative.saveAndReload(v,editStartScrollY);}catch(e){}"
+      + "  }else{"
+      + "    function restore(){"
+      + "      try{window.scrollTo(0,editStartScrollY);}catch(e){}"
+      + "    }"
+      + "    requestAnimationFrame(function(){"
+      + "      requestAnimationFrame(restore);"
+      + "    });"
+      + "    setTimeout(restore,60);"
+      + "    setTimeout(restore,200);"
       + "  }"
       + "}"
 

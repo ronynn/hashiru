@@ -19,10 +19,6 @@
             </intent-filter>
         </activity>
 
-        <!--
-            documentLaunchMode="always" + unique data URI per file
-            → each opened file becomes its own task in the recents switcher.
-        -->
         <activity
             android:name=".WebViewActivity"
             android:exported="true"
@@ -31,7 +27,7 @@
             android:documentLaunchMode="always"
             android:theme="@style/WebViewTheme">
 
-            <!-- MIME-based: .md / .markdown / .txt from any file manager / app -->
+            <!-- Markdown / plain text / reader formats (rendered safely, no JS from content) -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -43,7 +39,17 @@
                 <data android:scheme="file"    android:mimeType="text/x-markdown" />
             </intent-filter>
 
-            <!-- Path-pattern fallback for file managers that don't send MIME -->
+            <!-- HTML files (rendered as HTML, JS enabled — this is the app runner) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" android:mimeType="text/html" />
+                <data android:scheme="file"    android:mimeType="text/html" />
+                <data android:scheme="content" android:mimeType="application/xhtml+xml" />
+                <data android:scheme="file"    android:mimeType="application/xhtml+xml" />
+            </intent-filter>
+
+            <!-- Path-pattern fallbacks for file managers that send generic MIME -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -61,6 +67,18 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:scheme="file" android:host="*"
                       android:pathPattern=".*\\.markdown" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="file" android:host="*"
+                      android:pathPattern=".*\\.html" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="file" android:host="*"
+                      android:pathPattern=".*\\.htm" />
             </intent-filter>
         </activity>
     </application>

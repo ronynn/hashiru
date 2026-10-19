@@ -103,13 +103,29 @@ public class WebViewActivity extends Activity {
         super.onCreate(b);
         setContentView(R.layout.activity_webview);
 
-        // Read settings and paint window backgrounds FIRST so there's no white
-        // flash before HTML arrives.
         settings = ReaderSettings.load(this);
         statusBarHeight = getStatusBarHeight();
 
-        int themeBg = ReaderRenderer.backgroundArgb(settings.theme);
-        getWindow().setBackgroundDrawable(new ColorDrawable(themeBg));
+        // ---- Determine reader vs HTML app BEFORE painting any background ----
+        String treeUriStr = getIntent().getStringExtra(EXTRA_TREE_URI);
+        String relPath = getIntent().getStringExtra(EXTRA_REL_PATH);
+        Uri directUri = null;
+
+        if (treeUriStr != null && relPath != null) {
+            currentExt = extOf(relPath);
+        } else if (Intent.ACTION_VIEW.equals(getIntent().getAction())
+                && getIntent().getData() != null) {
+            directUri = getIntent().getData();
+            currentExt = extOf(queryDisplayName(directUri));
+        }
+        isReader = isReaderExt(currentExt);
+
+        // Reader → theme colour (matches body). HTML app → neutral chrome colour
+        // so no markdown theme flashes before the app's own <body> paints.
+        final int bg = isReader
+                ? ReaderRenderer.backgroundArgb(settings.theme)
+                : BAR_COLOR_HTML;
+        getWindow().setBackgroundDrawable(new ColorDrawable(bg));
 
         IntentFilter filter = new IntentFilter(ACTION_MEDIA_CMD);
         if (Build.VERSION.SDK_INT >= 33)
@@ -118,7 +134,7 @@ public class WebViewActivity extends Activity {
             registerReceiver(mediaCmdReceiver, filter);
 
         web = findViewById(R.id.web);
-        web.setBackgroundColor(themeBg);
+        web.setBackgroundColor(bg);
         web.setOverScrollMode(View.OVER_SCROLL_NEVER);
         web.setVerticalScrollBarEnabled(false);
         web.setHorizontalScrollBarEnabled(false);
@@ -167,11 +183,11 @@ public class WebViewActivity extends Activity {
                 if (pendingRestoreY >= 0) {
                     int y = pendingRestoreY;
                     pendingRestoreY = -1;
-                    v.scrollTo(0, y);
+                    scrollAfterLoad(v, y);
                 } else if (restorePending) {
                     restorePending = false;
                     int y = posPrefs.getInt(posKey, 0);
-                    if (y > 0) v.scrollTo(0, y);
+                    if (y > 0) scrollAfterLoad(v, y);
                 }
             }
         });
@@ -200,14 +216,10 @@ public class WebViewActivity extends Activity {
             }
         });
 
-        String treeUriStr = getIntent().getStringExtra(EXTRA_TREE_URI);
-        String relPath = getIntent().getStringExtra(EXTRA_REL_PATH);
-
         if (treeUriStr != null && relPath != null) {
             openFromTree(treeUriStr, relPath);
-        } else if (Intent.ACTION_VIEW.equals(getIntent().getAction())
-                && getIntent().getData() != null) {
-            openDirectFile(getIntent().getData());
+        } else if (directUri != null) {
+            openDirectFile(directUri);
         } else {
             finish();
         }
@@ -219,8 +231,6 @@ public class WebViewActivity extends Activity {
 
     private void openFromTree(String treeUriStr, String relPath) {
         posKey = treeUriStr + "|" + relPath;
-        currentExt = extOf(relPath);
-        isReader = isReaderExt(currentExt);
         currentTreeUri = Uri.parse(treeUriStr);
         currentRelPath = relPath;
 
@@ -236,14 +246,13 @@ public class WebViewActivity extends Activity {
 
     private void openDirectFile(Uri fileUri) {
         currentDirectUri = fileUri;
-        String name = queryDisplayName(fileUri);
-        currentExt = extOf(name);
-        isReader = isReaderExt(currentExt);
         posKey = fileUri.toString();
 
         if (Build.VERSION.SDK_INT >= 21)
             setTaskDescription(new ActivityManager.TaskDescription(
-                    name == null ? "Hashiru" : name));
+                    queryDisplayName(fileUri)));
+
+        applyOrientation(getResources().getConfiguration().orientation);
 
         try {
             InputStream in = getContentResolver().openInputStream(fileUri);
@@ -252,15 +261,12 @@ public class WebViewActivity extends Activity {
             String baseUrl = "https://hashiru.local/"
                     + Uri.encode(fileUri.toString()) + "/";
 
-            applyOrientation(getResources().getConfiguration().orientation);
-
             if (currentExt.equals("html") || currentExt.equals("htm")) {
                 web.loadDataWithBaseURL(baseUrl, raw, "text/html", "utf-8", null);
                 return;
             }
-
             String html;
-            if (isReaderExt(currentExt)) {
+            if (isReader) {
                 html = ReaderRenderer.render(
                         currentExt, raw, settings, currentSbhDp(), settings.blurEnabled);
             } else {
@@ -278,7 +284,6 @@ public class WebViewActivity extends Activity {
                 + "&blur=" + (settings.blurEnabled ? "1" : "0");
     }
 
-    /** Padding below status bar in CSS px; 0 for landscape or non-reader files. */
     private int currentSbhDp() {
         if (!isReader) return 0;
         if (getResources().getConfiguration().orientation
@@ -286,6 +291,24 @@ public class WebViewActivity extends Activity {
         if (statusBarHeight <= 0) return 0;
         float density = getResources().getDisplayMetrics().density;
         return Math.round(statusBarHeight / density);
+    }
+
+    /**
+     * Restore scroll after a load. v.scrollTo() at onPageFinished often runs
+     * before the document is tall enough and gets clamped to 0 — defer with
+     * JS that retries across a few frames.
+     */
+    private void scrollAfterLoad(WebView v, int y) {
+        if (y <= 0) return;
+        final String js = "(function(){var y=" + y + ";"
+                + "function s(){try{window.scrollTo(0,y);}catch(e){}}"
+                + "requestAnimationFrame(function(){requestAnimationFrame(s);});"
+                + "setTimeout(s,80);"
+                + "setTimeout(s,250);"
+                + "})();";
+        v.postDelayed(() -> {
+            try { v.evaluateJavascript(js, null); } catch (Exception ignored) {}
+        }, 30);
     }
 
     // ==================================================================
@@ -307,7 +330,6 @@ public class WebViewActivity extends Activity {
             getWindow().setBackgroundDrawable(new ColorDrawable(themeBg));
             web.setBackgroundColor(themeBg);
             applyOrientation(getResources().getConfiguration().orientation);
-            // Capture scroll *before* reload so we can restore it.
             if (pendingRestoreY < 0) pendingRestoreY = web.getScrollY();
             reloadCurrentFile();
         }
@@ -327,7 +349,6 @@ public class WebViewActivity extends Activity {
     public void onConfigurationChanged(Configuration cfg) {
         super.onConfigurationChanged(cfg);
         applyOrientation(cfg.orientation);
-        // sbh is different per orientation → reload so padding is correct.
         if (isReader && web != null) {
             if (pendingRestoreY < 0) pendingRestoreY = web.getScrollY();
             reloadCurrentFile();
@@ -593,7 +614,6 @@ public class WebViewActivity extends Activity {
                 .setShowActionsInCompactView(0);
         if (mediaSession != null) style.setMediaSession(mediaSession.getSessionToken());
 
-        // Resolve app icon safely (works whether it's drawable/ or mipmap/).
         int iconRes = getApplicationInfo().icon;
         if (iconRes == 0) iconRes = android.R.drawable.ic_media_play;
 
@@ -878,7 +898,7 @@ public class WebViewActivity extends Activity {
     }
 
     // ==================================================================
-    //  System UI — reader is ALWAYS fullscreen
+    //  System UI
     // ==================================================================
 
     private void applyOrientation(int orientation) {
@@ -886,7 +906,6 @@ public class WebViewActivity extends Activity {
         View decor = win.getDecorView();
         WindowManager.LayoutParams lp = win.getAttributes();
 
-        // Reader in landscape: truly immersive (no status bar at all).
         if (isReader && orientation == Configuration.ORIENTATION_LANDSCAPE) {
             decor.setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
@@ -906,9 +925,6 @@ public class WebViewActivity extends Activity {
         }
 
         if (isReader) {
-            // Fullscreen portrait: transparent status bar, content flows
-            // under it (padding is baked into the HTML). Blur only
-            // controls whether an overlay is drawn on top.
             win.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
             win.setStatusBarColor(Color.TRANSPARENT);
             win.setNavigationBarColor(BAR_COLOR_HTML);
@@ -921,7 +937,6 @@ public class WebViewActivity extends Activity {
                 lp.layoutInDisplayCutoutMode =
                         WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
         } else {
-            // HTML apps (any orientation): opaque, normal chrome.
             win.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
             win.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
             win.setStatusBarColor(BAR_COLOR_HTML);
