@@ -70,6 +70,11 @@ public class WebViewActivity extends Activity {
     private boolean restorePending = true;
     private int pendingRestoreY = -1;
 
+    // Set before any reloadCurrentFile(); consumed in onPageFinished. Prevents
+    // the WebView back button from returning to the pre-edit render that still
+    // lives in its back-forward cache.
+    private boolean clearHistoryOnNextFinish = false;
+
     private ValueCallback<Uri[]> fileChooserCallback;
     private String currentExt = "";
     private boolean isReader = false;
@@ -106,7 +111,7 @@ public class WebViewActivity extends Activity {
         settings = ReaderSettings.load(this);
         statusBarHeight = getStatusBarHeight();
 
-        // ---- Determine reader vs HTML app BEFORE painting any background ----
+        // Decide reader-vs-HTML before painting any background.
         String treeUriStr = getIntent().getStringExtra(EXTRA_TREE_URI);
         String relPath = getIntent().getStringExtra(EXTRA_REL_PATH);
         Uri directUri = null;
@@ -120,8 +125,6 @@ public class WebViewActivity extends Activity {
         }
         isReader = isReaderExt(currentExt);
 
-        // Reader → theme colour (matches body). HTML app → neutral chrome colour
-        // so no markdown theme flashes before the app's own <body> paints.
         final int bg = isReader
                 ? ReaderRenderer.backgroundArgb(settings.theme)
                 : BAR_COLOR_HTML;
@@ -188,6 +191,13 @@ public class WebViewActivity extends Activity {
                     restorePending = false;
                     int y = posPrefs.getInt(posKey, 0);
                     if (y > 0) scrollAfterLoad(v, y);
+                }
+
+                // Reader reloads add a history entry; wiping it means back
+                // exits to MainActivity rather than showing stale content.
+                if (clearHistoryOnNextFinish) {
+                    clearHistoryOnNextFinish = false;
+                    try { v.clearHistory(); } catch (Exception ignored) {}
                 }
             }
         });
@@ -293,11 +303,6 @@ public class WebViewActivity extends Activity {
         return Math.round(statusBarHeight / density);
     }
 
-    /**
-     * Restore scroll after a load. v.scrollTo() at onPageFinished often runs
-     * before the document is tall enough and gets clamped to 0 — defer with
-     * JS that retries across a few frames.
-     */
     private void scrollAfterLoad(WebView v, int y) {
         if (y <= 0) return;
         final String js = "(function(){var y=" + y + ";"
@@ -357,6 +362,7 @@ public class WebViewActivity extends Activity {
 
     private void reloadCurrentFile() {
         if (web == null) return;
+        clearHistoryOnNextFinish = true;   // only called from reader context
         if (server != null && currentRelPath != null) {
             web.loadUrl(buildServerUrl());
         } else if (currentDirectUri != null) {

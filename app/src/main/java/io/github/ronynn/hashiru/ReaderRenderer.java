@@ -18,12 +18,8 @@ public class ReaderRenderer {
 
     private static final Parser PARSER = Parser.builder().extensions(EXTENSIONS).build();
 
-    // escapeHtml(true): raw HTML in source is rendered as text → no <script>,
-    //                   <iframe>, <style>, on* handlers, etc. can inject.
-    // sanitizeUrls(true): strips javascript:/vbscript:/file:/data: (non-image)
-    //                     schemes from <a href> and <img src>.
-    // Together: user content cannot execute JavaScript. Only the app's own
-    // inline EDIT_SCRIPT runs, and .html files bypass this renderer entirely.
+    // escapeHtml(true): raw HTML in source is text → no <script>, <iframe>, etc.
+    // sanitizeUrls(true): strips javascript:/vbscript:/file: from links/images.
     private static final HtmlRenderer RENDERER = HtmlRenderer.builder()
             .extensions(EXTENSIONS)
             .escapeHtml(true)
@@ -37,14 +33,44 @@ public class ReaderRenderer {
 
         String body;
         if (isMd) {
-            body = RENDERER.render(PARSER.parse(raw));
+            // .txt: preprocess so single newlines render as visible line breaks
+            // (matches what people who write .txt expect). .md keeps strict
+            // CommonMark semantics (single \n = soft break = space).
+            // The ORIGINAL raw is still passed to wrap() so edits round-trip clean.
+            String srcForParser = ext.equals("txt") ? softBreaksToHard(raw) : raw;
+            body = RENDERER.render(PARSER.parse(srcForParser));
             body = body.replace("<table>", "<div class=\"table-wrap\"><table>")
                        .replace("</table>", "</table></div>");
         } else {
-            // .org / .twee / anything else — escape by hand, wrap in <pre>
             body = "<pre class=\"plain\">" + escapeHtml(raw) + "</pre>";
         }
         return wrap(body, raw, settings, sbhDp, blurEnabled);
+    }
+
+    /**
+     * Adds "  " (two trailing spaces) before every non-blank newline, which
+     * CommonMark treats as a hard line break. Converts "line1\nline2" from
+     * rendering as "line1 line2" into "line1<br>line2".
+     */
+    private static String softBreaksToHard(String raw) {
+        if (raw == null || raw.isEmpty()) return raw;
+        // Normalize CR so \r\n doesn't produce double content.
+        if (raw.indexOf('\r') >= 0) {
+            raw = raw.replace("\r\n", "\n").replace('\r', '\n');
+        }
+        StringBuilder sb = new StringBuilder(raw.length() + raw.length() / 8);
+        char prev = '\n';
+        for (int i = 0; i < raw.length(); i++) {
+            char c = raw.charAt(i);
+            if (c == '\n') {
+                if (prev == '\n') sb.append('\n');   // blank line stays blank
+                else sb.append("  \n");              // hard break
+            } else {
+                sb.append(c);
+            }
+            prev = c;
+        }
+        return sb.toString();
     }
 
     public static int backgroundArgb(String theme) {
