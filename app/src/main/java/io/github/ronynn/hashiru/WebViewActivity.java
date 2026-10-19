@@ -103,11 +103,11 @@ public class WebViewActivity extends Activity {
         super.onCreate(b);
         setContentView(R.layout.activity_webview);
 
+        // Read settings and paint window backgrounds FIRST so there's no white
+        // flash before HTML arrives.
         settings = ReaderSettings.load(this);
         statusBarHeight = getStatusBarHeight();
 
-        // Paint window + WebView in theme colour before any content arrives,
-        // otherwise there's a white flash before HTML renders.
         int themeBg = ReaderRenderer.backgroundArgb(settings.theme);
         getWindow().setBackgroundDrawable(new ColorDrawable(themeBg));
 
@@ -213,6 +213,10 @@ public class WebViewActivity extends Activity {
         }
     }
 
+    // ==================================================================
+    //  Load
+    // ==================================================================
+
     private void openFromTree(String treeUriStr, String relPath) {
         posKey = treeUriStr + "|" + relPath;
         currentExt = extOf(relPath);
@@ -226,10 +230,45 @@ public class WebViewActivity extends Activity {
         try { server = LocalFileServer.acquire(currentTreeUri, getContentResolver(), this); }
         catch (IOException e) { finish(); return; }
 
-        // Fullscreen chrome set BEFORE WebView loads → no FOUC.
-        // Padding is baked into the HTML by the server, so no post-load shift.
         applyOrientation(getResources().getConfiguration().orientation);
         web.loadUrl(buildServerUrl());
+    }
+
+    private void openDirectFile(Uri fileUri) {
+        currentDirectUri = fileUri;
+        String name = queryDisplayName(fileUri);
+        currentExt = extOf(name);
+        isReader = isReaderExt(currentExt);
+        posKey = fileUri.toString();
+
+        if (Build.VERSION.SDK_INT >= 21)
+            setTaskDescription(new ActivityManager.TaskDescription(
+                    name == null ? "Hashiru" : name));
+
+        try {
+            InputStream in = getContentResolver().openInputStream(fileUri);
+            if (in == null) { finish(); return; }
+            String raw = readAllCapped(in);
+            String baseUrl = "https://hashiru.local/"
+                    + Uri.encode(fileUri.toString()) + "/";
+
+            applyOrientation(getResources().getConfiguration().orientation);
+
+            if (currentExt.equals("html") || currentExt.equals("htm")) {
+                web.loadDataWithBaseURL(baseUrl, raw, "text/html", "utf-8", null);
+                return;
+            }
+
+            String html;
+            if (isReaderExt(currentExt)) {
+                html = ReaderRenderer.render(
+                        currentExt, raw, settings, currentSbhDp(), settings.blurEnabled);
+            } else {
+                html = ReaderRenderer.render(
+                        "txt", raw, settings, currentSbhDp(), settings.blurEnabled);
+            }
+            web.loadDataWithBaseURL(baseUrl, html, "text/html", "utf-8", null);
+        } catch (IOException e) { finish(); }
     }
 
     private String buildServerUrl() {
@@ -239,10 +278,7 @@ public class WebViewActivity extends Activity {
                 + "&blur=" + (settings.blurEnabled ? "1" : "0");
     }
 
-    /**
-     * Padding to apply below status bar, in CSS px. Non-zero for reader in
-     * portrait regardless of blur — blur only controls the visual overlay.
-     */
+    /** Padding below status bar in CSS px; 0 for landscape or non-reader files. */
     private int currentSbhDp() {
         if (!isReader) return 0;
         if (getResources().getConfiguration().orientation
@@ -251,6 +287,10 @@ public class WebViewActivity extends Activity {
         float density = getResources().getDisplayMetrics().density;
         return Math.round(statusBarHeight / density);
     }
+
+    // ==================================================================
+    //  Lifecycle
+    // ==================================================================
 
     @Override
     protected void onResume() {
@@ -261,11 +301,14 @@ public class WebViewActivity extends Activity {
                 || fresh.fontSize != settings.fontSize;
         boolean blurChanged = fresh.blurEnabled != settings.blurEnabled;
         settings = fresh;
+
         if (isReader && web != null && (appearanceChanged || blurChanged)) {
             int themeBg = ReaderRenderer.backgroundArgb(settings.theme);
             getWindow().setBackgroundDrawable(new ColorDrawable(themeBg));
             web.setBackgroundColor(themeBg);
             applyOrientation(getResources().getConfiguration().orientation);
+            // Capture scroll *before* reload so we can restore it.
+            if (pendingRestoreY < 0) pendingRestoreY = web.getScrollY();
             reloadCurrentFile();
         }
         if (!mediaPlaying) injectEruda();
@@ -278,6 +321,40 @@ public class WebViewActivity extends Activity {
             return;
         }
         super.onBackPressed();
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration cfg) {
+        super.onConfigurationChanged(cfg);
+        applyOrientation(cfg.orientation);
+        // sbh is different per orientation → reload so padding is correct.
+        if (isReader && web != null) {
+            if (pendingRestoreY < 0) pendingRestoreY = web.getScrollY();
+            reloadCurrentFile();
+        }
+    }
+
+    private void reloadCurrentFile() {
+        if (web == null) return;
+        if (server != null && currentRelPath != null) {
+            web.loadUrl(buildServerUrl());
+        } else if (currentDirectUri != null) {
+            try {
+                InputStream in = getContentResolver().openInputStream(currentDirectUri);
+                if (in == null) return;
+                String raw = readAllCapped(in);
+                String html;
+                if (currentExt.equals("html") || currentExt.equals("htm")) {
+                    html = raw;
+                } else {
+                    html = ReaderRenderer.render(
+                            currentExt, raw, settings, currentSbhDp(), settings.blurEnabled);
+                }
+                String baseUrl = "https://hashiru.local/"
+                        + Uri.encode(currentDirectUri.toString()) + "/";
+                web.loadDataWithBaseURL(baseUrl, html, "text/html", "utf-8", null);
+            } catch (IOException ignored) {}
+        }
     }
 
     // ==================================================================
@@ -332,7 +409,7 @@ public class WebViewActivity extends Activity {
     }
 
     // ==================================================================
-    //  Save / reload
+    //  Save helpers
     // ==================================================================
 
     private boolean saveSourceSync(String source) {
@@ -392,37 +469,12 @@ public class WebViewActivity extends Activity {
         return null;
     }
 
-    private void reloadCurrentFile() {
-        if (web == null) return;
-        if (pendingRestoreY < 0) {
-            pendingRestoreY = web.getScrollY();
-        }
-        if (server != null && currentRelPath != null) {
-            web.loadUrl(buildServerUrl());
-        } else if (currentDirectUri != null) {
-            try {
-                InputStream in = getContentResolver().openInputStream(currentDirectUri);
-                if (in == null) return;
-                String raw = readAllCapped(in);
-                String html;
-                if (currentExt.equals("html") || currentExt.equals("htm")) {
-                    html = raw;
-                } else {
-                    html = ReaderRenderer.render(
-                            currentExt, raw, settings, currentSbhDp(), settings.blurEnabled);
-                }
-                String baseUrl = "https://hashiru.local/"
-                        + Uri.encode(currentDirectUri.toString()) + "/";
-                web.loadDataWithBaseURL(baseUrl, html, "text/html", "utf-8", null);
-            } catch (IOException ignored) {}
-        }
-    }
-
     // ==================================================================
-    //  Tap highlight
+    //  Page JS helpers
     // ==================================================================
 
     private void injectTapHighlightFix() {
+        if (web == null) return;
         String js = "(function(){try{"
             + "var s=document.createElement('style');"
             + "s.textContent='*{-webkit-tap-highlight-color:transparent !important;}"
@@ -431,10 +483,6 @@ public class WebViewActivity extends Activity {
             + "}catch(e){}})();";
         web.evaluateJavascript(js, null);
     }
-
-    // ==================================================================
-    //  Eruda (HTML apps only)
-    // ==================================================================
 
     private void injectEruda() {
         if (web == null || settings == null || !settings.erudaEnabled) return;
@@ -445,47 +493,10 @@ public class WebViewActivity extends Activity {
             + "var s=document.createElement('script');"
             + "s.src='https://cdn.jsdelivr.net/npm/eruda@3';"
             + "s.onload=function(){try{eruda.init();}catch(e){}};"
-            + "s.onerror=function(){console.warn('eruda failed');};"
+            + "s.onerror=function(){};"
             + "document.head.appendChild(s);"
             + "})();";
         web.evaluateJavascript(js, null);
-    }
-
-    // ==================================================================
-    //  Media
-    // ==================================================================
-
-    private void ensureMediaSession() {
-        if (Build.VERSION.SDK_INT < 21) return;
-        if (mediaSession != null) return;
-        mediaSession = new MediaSession(this, "HashiruMedia_" + notifId);
-        mediaSession.setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS
-                | MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS);
-        mediaSession.setCallback(new MediaSession.Callback() {
-            @Override public void onPlay()  { sendJsMediaCmd("play"); }
-            @Override public void onPause() { sendJsMediaCmd("pause"); }
-            @Override public void onStop()  { sendJsMediaCmd("stop"); stopMediaNotification(); }
-        });
-        mediaSession.setActive(true);
-    }
-
-    private void sendJsMediaCmd(String cmd) {
-        if (web == null) return;
-        String inner;
-        switch (cmd) {
-            case "play":
-                inner = "document.querySelectorAll('audio,video').forEach(function(m){m.play();});";
-                break;
-            case "pause":
-                inner = "document.querySelectorAll('audio,video').forEach(function(m){m.pause();});";
-                break;
-            case "stop":
-                inner = "document.querySelectorAll('audio,video')"
-                      + ".forEach(function(m){m.pause();m.currentTime=0;});";
-                break;
-            default: return;
-        }
-        web.evaluateJavascript("try{" + inner + "}catch(e){}", null);
     }
 
     private void injectMediaHooks() {
@@ -527,6 +538,45 @@ public class WebViewActivity extends Activity {
         web.evaluateJavascript(js, null);
     }
 
+    // ==================================================================
+    //  Media
+    // ==================================================================
+
+    private void ensureMediaSession() {
+        if (Build.VERSION.SDK_INT < 21) return;
+        if (mediaSession != null) return;
+        mediaSession = new MediaSession(this, "HashiruMedia_" + notifId);
+        mediaSession.setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS
+                | MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS);
+        mediaSession.setCallback(new MediaSession.Callback() {
+            @Override public void onPlay()  { sendJsMediaCmd("play"); }
+            @Override public void onPause() { sendJsMediaCmd("pause"); }
+            @Override public void onStop()  { sendJsMediaCmd("stop"); stopMediaNotification(); }
+        });
+        mediaSession.setActive(true);
+    }
+
+    private void sendJsMediaCmd(String cmd) {
+        if (web == null) return;
+        String inner;
+        switch (cmd) {
+            case "play":
+                inner = "document.querySelectorAll('audio,video')"
+                      + ".forEach(function(m){try{m.play();}catch(e){}});";
+                break;
+            case "pause":
+                inner = "document.querySelectorAll('audio,video')"
+                      + ".forEach(function(m){try{m.pause();}catch(e){}});";
+                break;
+            case "stop":
+                inner = "document.querySelectorAll('audio,video')"
+                      + ".forEach(function(m){try{m.pause();m.currentTime=0;}catch(e){}});";
+                break;
+            default: return;
+        }
+        web.evaluateJavascript("try{" + inner + "}catch(e){}", null);
+    }
+
     private void showOrUpdateMediaNotification(String title, boolean playing) {
         if (Build.VERSION.SDK_INT < 21) return;
         ensureMediaSession();
@@ -543,16 +593,20 @@ public class WebViewActivity extends Activity {
                 .setShowActionsInCompactView(0);
         if (mediaSession != null) style.setMediaSession(mediaSession.getSessionToken());
 
+        // Resolve app icon safely (works whether it's drawable/ or mipmap/).
+        int iconRes = getApplicationInfo().icon;
+        if (iconRes == 0) iconRes = android.R.drawable.ic_media_play;
+
         Bitmap bigIcon = null;
         try {
-            bigIcon = BitmapFactory.decodeResource(getResources(), R.drawable.ic_launcher);
+            bigIcon = BitmapFactory.decodeResource(getResources(), iconRes);
         } catch (Exception ignored) {}
 
         Notification.Builder b;
         if (Build.VERSION.SDK_INT >= 26) b = new Notification.Builder(this, CHANNEL_ID);
         else b = new Notification.Builder(this);
 
-        b.setSmallIcon(R.drawable.ic_launcher)
+        b.setSmallIcon(iconRes)
          .setContentTitle(title == null ? "Media" : title)
          .setContentText(playing ? "Playing" : "Paused")
          .setStyle(style)
@@ -571,7 +625,7 @@ public class WebViewActivity extends Activity {
         try {
             notificationManager().notify(notifId, b.build());
         } catch (SecurityException e) {
-            Log.d(TAG, "notification blocked (missing POST_NOTIFICATIONS)");
+            Log.d(TAG, "notification blocked (no POST_NOTIFICATIONS)");
         }
 
         if (mediaSession != null) {
@@ -595,7 +649,7 @@ public class WebViewActivity extends Activity {
     }
 
     private void stopMediaNotification() {
-        notificationManager().cancel(notifId);
+        try { notificationManager().cancel(notifId); } catch (Exception ignored) {}
         mediaPlaying = false;
         if (mediaSession != null) {
             mediaSession.setPlaybackState(new PlaybackState.Builder()
@@ -723,48 +777,6 @@ public class WebViewActivity extends Activity {
     }
 
     // ==================================================================
-    //  Direct file (ACTION_VIEW)
-    // ==================================================================
-
-    private void openDirectFile(Uri fileUri) {
-        currentDirectUri = fileUri;
-        String name = queryDisplayName(fileUri);
-        currentExt = extOf(name);
-        isReader = isReaderExt(currentExt);
-        posKey = fileUri.toString();
-
-        if (Build.VERSION.SDK_INT >= 21)
-            setTaskDescription(new ActivityManager.TaskDescription(
-                    name == null ? "Hashiru" : name));
-
-        try {
-            InputStream in = getContentResolver().openInputStream(fileUri);
-            if (in == null) { finish(); return; }
-            String raw = readAllCapped(in);
-            String baseUrl = "https://hashiru.local/"
-                    + Uri.encode(fileUri.toString()) + "/";
-
-            if (currentExt.equals("html") || currentExt.equals("htm")) {
-                applyOrientation(getResources().getConfiguration().orientation);
-                web.loadDataWithBaseURL(baseUrl, raw, "text/html", "utf-8", null);
-                return;
-            }
-
-            // Reader: fullscreen chrome BEFORE load.
-            applyOrientation(getResources().getConfiguration().orientation);
-            String html;
-            if (isReaderExt(currentExt)) {
-                html = ReaderRenderer.render(
-                        currentExt, raw, settings, currentSbhDp(), settings.blurEnabled);
-            } else {
-                html = ReaderRenderer.render(
-                        "txt", raw, settings, currentSbhDp(), settings.blurEnabled);
-            }
-            web.loadDataWithBaseURL(baseUrl, html, "text/html", "utf-8", null);
-        } catch (IOException e) { finish(); }
-    }
-
-    // ==================================================================
     //  Helpers
     // ==================================================================
 
@@ -855,6 +867,7 @@ public class WebViewActivity extends Activity {
     }
 
     private String encodePath(String path) {
+        if (path == null) return "";
         StringBuilder sb = new StringBuilder();
         String[] parts = path.split("/");
         for (int i = 0; i < parts.length; i++) {
@@ -865,26 +878,16 @@ public class WebViewActivity extends Activity {
     }
 
     // ==================================================================
-    //  System UI
+    //  System UI — reader is ALWAYS fullscreen
     // ==================================================================
-
-    @Override
-    public void onConfigurationChanged(Configuration cfg) {
-        super.onConfigurationChanged(cfg);
-        applyOrientation(cfg.orientation);
-        // sbh differs between orientations → reload with new padding baked in.
-        if (isReader && web != null) {
-            reloadCurrentFile();
-        }
-    }
 
     private void applyOrientation(int orientation) {
         Window win = getWindow();
         View decor = win.getDecorView();
         WindowManager.LayoutParams lp = win.getAttributes();
 
-        if (orientation == Configuration.ORIENTATION_LANDSCAPE) {
-            // Immersive fullscreen — no status bar at all.
+        // Reader in landscape: truly immersive (no status bar at all).
+        if (isReader && orientation == Configuration.ORIENTATION_LANDSCAPE) {
             decor.setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                             | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
@@ -903,8 +906,9 @@ public class WebViewActivity extends Activity {
         }
 
         if (isReader) {
-            // Fullscreen portrait with transparent status bar. Content padding
-            // is baked into the HTML; blur overlay (if enabled) sits on top.
+            // Fullscreen portrait: transparent status bar, content flows
+            // under it (padding is baked into the HTML). Blur only
+            // controls whether an overlay is drawn on top.
             win.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
             win.setStatusBarColor(Color.TRANSPARENT);
             win.setNavigationBarColor(BAR_COLOR_HTML);
@@ -917,7 +921,7 @@ public class WebViewActivity extends Activity {
                 lp.layoutInDisplayCutoutMode =
                         WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
         } else {
-            // Non-reader (HTML apps): opaque chrome.
+            // HTML apps (any orientation): opaque, normal chrome.
             win.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
             win.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
             win.setStatusBarColor(BAR_COLOR_HTML);
@@ -931,7 +935,7 @@ public class WebViewActivity extends Activity {
     }
 
     // ==================================================================
-    //  Lifecycle
+    //  Cleanup
     // ==================================================================
 
     private void savePosition() {
