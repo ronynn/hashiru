@@ -14,6 +14,8 @@ import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.media.MediaMetadata;
 import android.media.session.MediaSession;
@@ -55,8 +57,8 @@ public class WebViewActivity extends Activity {
 
     private static final int BAR_COLOR_HTML = 0xFF1A1A1A;
     private static final String CHANNEL_ID = "hashiru_media";
-    private static final int NOTIF_ID = 1001;
     private static final String ACTION_MEDIA_CMD = "io.github.ronynn.hashiru.MEDIA_CMD";
+    private static final int NOTIFICATION_COLOR = 0xFF1976D2;
 
     /** Hard cap on reader file size — WebView chokes on huge pages. */
     private static final int MAX_READER_BYTES = 5 * 1024 * 1024;
@@ -87,6 +89,9 @@ public class WebViewActivity extends Activity {
     private boolean mediaPlaying = false;
     private String currentMediaTitle = "Media";
 
+    /** Per-instance notification ID so multiple tasks don't clobber each other. */
+    private final int notifId = System.identityHashCode(this) & 0x7FFFFFFF;
+
     private final BroadcastReceiver mediaCmdReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context ctx, Intent i) {
             String cmd = i.getStringExtra("cmd");
@@ -104,9 +109,6 @@ public class WebViewActivity extends Activity {
         settings = ReaderSettings.load(this);
         statusBarHeight = getStatusBarHeight();
 
-        // Register media-command receiver. No POST_NOTIFICATIONS prompt —
-        // the notification silently fails on 13+ without it, which is fine;
-        // MediaSession callbacks still work for hardware buttons.
         IntentFilter filter = new IntentFilter(ACTION_MEDIA_CMD);
         if (Build.VERSION.SDK_INT >= 33)
             registerReceiver(mediaCmdReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
@@ -182,7 +184,10 @@ public class WebViewActivity extends Activity {
                 Intent intent = params.createIntent();
                 intent.addCategory(Intent.CATEGORY_OPENABLE);
                 try { startActivityForResult(intent, REQ_FILE_CHOOSER); }
-                catch (ActivityNotFoundException e) { fileChooserCallback = null; return false; }
+                catch (ActivityNotFoundException e) {
+                    fileChooserCallback = null;
+                    return false;
+                }
                 return true;
             }
         });
@@ -194,20 +199,27 @@ public class WebViewActivity extends Activity {
             }
         });
 
-        if (Intent.ACTION_VIEW.equals(getIntent().getAction()) && getIntent().getData() != null) {
-            openDirectFile(getIntent().getData());
-            applyOrientation(getResources().getConfiguration().orientation);
-            return;
-        }
-
+        // ---- Intent routing ----
+        // 1) Internal launch from MainActivity (has extras): SAF-backed file.
+        // 2) External ACTION_VIEW: file content:// or file:// URI.
         String treeUriStr = getIntent().getStringExtra(EXTRA_TREE_URI);
         String relPath = getIntent().getStringExtra(EXTRA_REL_PATH);
-        if (treeUriStr == null || relPath == null) { finish(); return; }
 
+        if (treeUriStr != null && relPath != null) {
+            openFromTree(treeUriStr, relPath);
+        } else if (Intent.ACTION_VIEW.equals(getIntent().getAction())
+                && getIntent().getData() != null) {
+            openDirectFile(getIntent().getData());
+            applyOrientation(getResources().getConfiguration().orientation);
+        } else {
+            finish();
+        }
+    }
+
+    private void openFromTree(String treeUriStr, String relPath) {
         posKey = treeUriStr + "|" + relPath;
         currentExt = extOf(relPath);
         isReader = isReaderExt(currentExt);
-
         currentTreeUri = Uri.parse(treeUriStr);
         currentRelPath = relPath;
 
@@ -238,6 +250,15 @@ public class WebViewActivity extends Activity {
         if (!mediaPlaying) injectEruda();
     }
 
+    @Override
+    public void onBackPressed() {
+        if (web != null && web.canGoBack()) {
+            web.goBack();
+            return;
+        }
+        super.onBackPressed();
+    }
+
     // ==================================================================
     //  JS bridge (downloads, edit save, media)
     // ==================================================================
@@ -266,8 +287,6 @@ public class WebViewActivity extends Activity {
             runOnUiThread(WebViewActivity.this::reloadCurrentFile);
             return true;
         }
-
-        // ---- Media hooks (previously on the Activity — that was the bug) ----
 
         @JavascriptInterface
         public void onMediaPlay(final String title) {
@@ -313,7 +332,8 @@ public class WebViewActivity extends Activity {
             } else if (currentTreeUri != null && currentRelPath != null) {
                 String docId = resolveDocId(currentTreeUri, currentRelPath);
                 if (docId == null) return false;
-                Uri docUri = DocumentsContract.buildDocumentUriUsingTree(currentTreeUri, docId);
+                Uri docUri = DocumentsContract.buildDocumentUriUsingTree(
+                        currentTreeUri, docId);
                 OutputStream os = getContentResolver().openOutputStream(docUri, "wt");
                 if (os == null) return false;
                 os.write(source.getBytes(StandardCharsets.UTF_8));
@@ -337,7 +357,8 @@ public class WebViewActivity extends Activity {
     }
 
     private String findChildId(Uri treeUri, String parentDocId, String name) {
-        Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId);
+        Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(
+                treeUri, parentDocId);
         Cursor c = null;
         try {
             c = getContentResolver().query(children,
@@ -382,19 +403,32 @@ public class WebViewActivity extends Activity {
         float density = getResources().getDisplayMetrics().density;
         int topPadCss = 0;
         if (orientation == Configuration.ORIENTATION_PORTRAIT && statusBarHeight > 0) {
-            topPadCss = Math.round(statusBarHeight / density);  // px → dp (CSS px in this viewport)
+            topPadCss = Math.round(statusBarHeight / density);   // px → dp
         }
 
         if (topPadCss <= 0) {
-            String cleanup = "(function(){"
+            web.evaluateJavascript(
+                "(function(){"
                 + "var s=document.getElementById('hashiru-statusblur-style');if(s)s.remove();"
                 + "var b=document.getElementById('hashiru-statusblur');if(b)b.remove();"
-                + "})();";
-            web.evaluateJavascript(cleanup, null);
+                + "})();", null);
             return;
         }
 
-        int blurHeight = topPadCss + 20;
+        // Blur bar extends only 6dp past the status bar → subtle fade,
+        // no meaningful reading space lost.
+        int blurHeight = topPadCss + 6;
+
+        // Light themes need a light-tinted overlay, dark themes a dark one.
+        String overlayColor = settings.isLightTheme()
+            ? "linear-gradient(to bottom,"
+              + "rgba(255,255,255,0.45) 0%,"
+              + "rgba(255,255,255,0.18) 50%,"
+              + "rgba(255,255,255,0) 100%)"
+            : "linear-gradient(to bottom,"
+              + "rgba(0,0,0,0.14) 0%,"
+              + "rgba(0,0,0,0.06) 50%,"
+              + "rgba(0,0,0,0) 100%)";
 
         String js = "(function(){"
             + "var oldS=document.getElementById('hashiru-statusblur-style');"
@@ -402,28 +436,28 @@ public class WebViewActivity extends Activity {
             + "var oldB=document.getElementById('hashiru-statusblur');"
             + "if(oldB)oldB.parentNode.removeChild(oldB);"
 
+            // Body padding only = status-bar height (reading area preserved).
             + "var st=document.createElement('style');"
             + "st.id='hashiru-statusblur-style';"
             + "st.textContent="
-            +   "'body{padding-top:" + blurHeight + "px !important;}' +"
-            +   "'#hashiru-editor{padding-top:" + (blurHeight + 12) + "px !important;}' +"
-            +   "'#hashiru-done{top:" + (blurHeight + 8) + "px !important;' +"
-            +     "'right:16px !important;bottom:auto !important;width:44px !important;' +"
-            +     "'height:44px !important;border-radius:22px !important;padding:0 !important;' +"
-            +     "'font-size:20px !important;}';"
+            +   "'body{padding-top:" + topPadCss + "px !important;}' +"
+            +   "'#hashiru-editor{padding-top:" + (topPadCss + 16) + "px !important;}' +"
+            +   "'#hashiru-done{top:" + (topPadCss + 10) + "px !important;' +"
+            +     "'right:16px !important;bottom:auto !important;' +"
+            +     "'height:40px !important;border-radius:10px !important;' +"
+            +     "'padding:0 14px !important;font-size:14px !important;}';"
             + "document.head.appendChild(st);"
 
             + "var d=document.createElement('div');"
             + "d.id='hashiru-statusblur';"
             + "d.style.cssText='position:fixed;top:0;left:0;right:0;"
             +   "height:" + blurHeight + "px;"
-            +   "-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);"
-            +   "background:linear-gradient(to bottom,"
-            +     "rgba(0,0,0,0.15) 0%,rgba(0,0,0,0.08) 50%,rgba(0,0,0,0) 100%);"
+            +   "-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);"
+            +   "background:" + overlayColor + ";"
             +   "-webkit-mask-image:linear-gradient(to bottom,"
-            +     "black 0%,black 55%,transparent 100%);"
+            +     "black 0%,black 40%,transparent 100%);"
             +   "mask-image:linear-gradient(to bottom,"
-            +     "black 0%,black 55%,transparent 100%);"
+            +     "black 0%,black 40%,transparent 100%);"
             +   "z-index:9700;pointer-events:none;';"
             + "document.body.appendChild(d);"
             + "})();";
@@ -441,7 +475,7 @@ public class WebViewActivity extends Activity {
     }
 
     // ==================================================================
-    //  Eruda (HTML apps only — skipped in readers)
+    //  Eruda (HTML apps only)
     // ==================================================================
 
     private void injectEruda() {
@@ -466,7 +500,7 @@ public class WebViewActivity extends Activity {
     private void ensureMediaSession() {
         if (Build.VERSION.SDK_INT < 21) return;
         if (mediaSession != null) return;
-        mediaSession = new MediaSession(this, "HashiruMedia");
+        mediaSession = new MediaSession(this, "HashiruMedia_" + notifId);
         mediaSession.setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS
                 | MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS);
         mediaSession.setCallback(new MediaSession.Callback() {
@@ -481,9 +515,16 @@ public class WebViewActivity extends Activity {
         if (web == null) return;
         String inner;
         switch (cmd) {
-            case "play":  inner = "document.querySelectorAll('audio,video').forEach(function(m){m.play();});"; break;
-            case "pause": inner = "document.querySelectorAll('audio,video').forEach(function(m){m.pause();});"; break;
-            case "stop":  inner = "document.querySelectorAll('audio,video').forEach(function(m){m.pause();m.currentTime=0;});"; break;
+            case "play":
+                inner = "document.querySelectorAll('audio,video').forEach(function(m){m.play();});";
+                break;
+            case "pause":
+                inner = "document.querySelectorAll('audio,video').forEach(function(m){m.pause();});";
+                break;
+            case "stop":
+                inner = "document.querySelectorAll('audio,video')"
+                      + ".forEach(function(m){m.pause();m.currentTime=0;});";
+                break;
             default: return;
         }
         web.evaluateJavascript("try{" + inner + "}catch(e){}", null);
@@ -491,8 +532,6 @@ public class WebViewActivity extends Activity {
 
     private void injectMediaHooks() {
         if (web == null) return;
-        // Hooks existing audio/video and observes future ones. Notifies native
-        // via __HashiruNative.onMediaPlay / onMediaPause / onMediaStop.
         String js = "(function(){"
             + "function hook(m){"
             + "  if(m.__hashiruHooked)return;m.__hashiruHooked=true;"
@@ -542,54 +581,68 @@ public class WebViewActivity extends Activity {
                 .setPackage(getPackageName()).putExtra("cmd", "toggle");
         PendingIntent togglePi = PendingIntent.getBroadcast(this, 0, toggleI, piFlags);
 
-        Intent stopI = new Intent(ACTION_MEDIA_CMD)
-                .setPackage(getPackageName()).putExtra("cmd", "stop");
-        PendingIntent stopPi = PendingIntent.getBroadcast(this, 1, stopI, piFlags);
-
+        // Single action: play ↔ pause. No stop button, no seekbar.
         Notification.MediaStyle style = new Notification.MediaStyle()
                 .setShowActionsInCompactView(0);
         if (mediaSession != null) style.setMediaSession(mediaSession.getSessionToken());
+
+        Bitmap bigIcon = null;
+        try {
+            bigIcon = BitmapFactory.decodeResource(getResources(), R.drawable.ic_launcher);
+        } catch (Exception ignored) {}
 
         Notification.Builder b;
         if (Build.VERSION.SDK_INT >= 26) b = new Notification.Builder(this, CHANNEL_ID);
         else b = new Notification.Builder(this);
 
-        b.setSmallIcon(playing
-                        ? android.R.drawable.ic_media_pause
-                        : android.R.drawable.ic_media_play)
+        b.setSmallIcon(R.drawable.ic_launcher)
          .setContentTitle(title == null ? "Media" : title)
          .setContentText(playing ? "Playing" : "Paused")
          .setStyle(style)
          .setOngoing(playing)
+         .setOnlyAlertOnce(true)
+         .setColor(NOTIFICATION_COLOR)
+         .setColorized(true)
          .setVisibility(Notification.VISIBILITY_PUBLIC)
-         .addAction(playing ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play,
-                 playing ? "Pause" : "Play", togglePi)
-         .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopPi);
+         .addAction(playing
+                     ? android.R.drawable.ic_media_pause
+                     : android.R.drawable.ic_media_play,
+                 playing ? "Pause" : "Play", togglePi);
+
+        if (bigIcon != null) b.setLargeIcon(bigIcon);
 
         try {
-            notificationManager().notify(NOTIF_ID, b.build());
+            notificationManager().notify(notifId, b.build());
         } catch (SecurityException e) {
-            // POST_NOTIFICATIONS not granted on 13+ — silently drop.
+            // No POST_NOTIFICATIONS on 13+ — silently skip; MediaSession
+            // hardware callbacks still function.
             Log.d(TAG, "notification blocked (missing POST_NOTIFICATIONS)");
         }
 
         if (mediaSession != null) {
+            // No duration in metadata + PLAYBACK_POSITION_UNKNOWN
+            // → MediaStyle hides the seekbar / time selector.
             mediaSession.setMetadata(new MediaMetadata.Builder()
-                    .putString(MediaMetadata.METADATA_KEY_TITLE, title)
+                    .putString(MediaMetadata.METADATA_KEY_TITLE,
+                            title == null ? "Media" : title)
+                    .putString(MediaMetadata.METADATA_KEY_ARTIST, "Hashiru")
                     .build());
             PlaybackState state = new PlaybackState.Builder()
                     .setActions(PlaybackState.ACTION_PLAY
                             | PlaybackState.ACTION_PAUSE
                             | PlaybackState.ACTION_STOP)
-                    .setState(playing ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED,
-                            0, 1.0f)
+                    .setState(
+                            playing ? PlaybackState.STATE_PLAYING
+                                    : PlaybackState.STATE_PAUSED,
+                            PlaybackState.PLAYBACK_POSITION_UNKNOWN,
+                            1.0f)
                     .build();
             mediaSession.setPlaybackState(state);
         }
     }
 
     private void stopMediaNotification() {
-        notificationManager().cancel(NOTIF_ID);
+        notificationManager().cancel(notifId);
         mediaPlaying = false;
         if (mediaSession != null) {
             mediaSession.setPlaybackState(new PlaybackState.Builder()
@@ -602,9 +655,8 @@ public class WebViewActivity extends Activity {
 
     @SuppressWarnings("deprecation")
     private NotificationManager notificationManager() {
-        if (Build.VERSION.SDK_INT >= 23) {
+        if (Build.VERSION.SDK_INT >= 23)
             return getSystemService(NotificationManager.class);
-        }
         return (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
     }
 
@@ -634,8 +686,9 @@ public class WebViewActivity extends Activity {
             boolean isB64 = meta.toLowerCase().contains(";base64");
             String m = meta.split(";")[0];
             if (m.isEmpty()) m = (mimeFromHeader == null ? "*/*" : mimeFromHeader);
-            if (isB64) startSaveDocument(m, data);
-            else {
+            if (isB64) {
+                startSaveDocument(m, data);
+            } else {
                 try {
                     String decoded = java.net.URLDecoder.decode(data, "UTF-8");
                     String b64 = Base64.encodeToString(
@@ -696,7 +749,10 @@ public class WebViewActivity extends Activity {
         i.setType(pendingSaveMime);
         i.putExtra(Intent.EXTRA_TITLE, suggestNameFor(pendingSaveMime));
         try { startActivityForResult(i, REQ_SAVE_FILE); }
-        catch (ActivityNotFoundException e) { pendingSaveBase64 = null; pendingSaveMime = null; }
+        catch (ActivityNotFoundException e) {
+            pendingSaveBase64 = null;
+            pendingSaveMime = null;
+        }
     }
 
     private String suggestNameFor(String mime) {
@@ -890,9 +946,8 @@ public class WebViewActivity extends Activity {
             win.setNavigationBarColor(BAR_COLOR_HTML);
             int flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                     | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
-            if (settings.isLightTheme() && Build.VERSION.SDK_INT >= 23) {
+            if (settings.isLightTheme() && Build.VERSION.SDK_INT >= 23)
                 flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
-            }
             decor.setSystemUiVisibility(flags);
             if (Build.VERSION.SDK_INT >= 28)
                 lp.layoutInDisplayCutoutMode =

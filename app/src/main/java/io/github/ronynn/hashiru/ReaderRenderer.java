@@ -20,7 +20,6 @@ public class ReaderRenderer {
     private static final HtmlRenderer RENDERER = HtmlRenderer.builder().extensions(EXTENSIONS).build();
 
     public static String render(String ext, String raw, ReaderSettings settings) {
-        // .txt always renders as Markdown now — .md / .markdown / .txt are all prose.
         boolean isMd = ext.equals("md") || ext.equals("markdown") || ext.equals("txt");
 
         String body;
@@ -48,7 +47,7 @@ public class ReaderRenderer {
              + "<style>" + css + "</style></head><body>"
              + "<div id=\"hashiru-view\">" + body + "</div>"
              + "<textarea id=\"hashiru-editor\" spellcheck=\"false\" autocorrect=\"off\" autocomplete=\"off\"></textarea>"
-             + "<button id=\"hashiru-done\" type=\"button\">✓</button>"
+             + "<button id=\"hashiru-done\" type=\"button\">Done ✓</button>"
              + "<script id=\"hashiru-source\" type=\"application/json\">" + sourceJson + "</script>"
              + "<script>" + EDIT_SCRIPT + "</script>"
              + "</body></html>";
@@ -77,27 +76,32 @@ public class ReaderRenderer {
         return sb.toString();
     }
 
-    private static String fontFamily(String f) {
-        switch (f) {
-            case "sans-light":     return "sans-serif-light,Roboto,sans-serif";
-            case "sans-thin":      return "sans-serif-thin,sans-serif-light,sans-serif";
-            case "sans-medium":    return "sans-serif-medium,Roboto,sans-serif";
-            case "sans-black":     return "sans-serif-black,sans-serif";
-            case "sans-condensed": return "sans-serif-condensed,'Roboto Condensed','Arial Narrow',sans-serif";
-            case "serif":          return "'Noto Serif',serif";
-            case "mono":           return "monospace";
-            case "cursive":        return "casual,cursive";
-            default:               return "sans-serif,Roboto,-apple-system,'Segoe UI',sans-serif";
+    private static String fontCss(ReaderSettings s) {
+        String family;
+        String weight = "400";
+        String stretch = "normal";
+        switch (s.font) {
+            case "sans-light":     family = "sans-serif"; weight = "300"; break;
+            case "sans-thin":      family = "sans-serif"; weight = "100"; break;
+            case "sans-medium":    family = "sans-serif"; weight = "500"; break;
+            case "sans-black":     family = "sans-serif"; weight = "900"; break;
+            case "sans-condensed": family = "sans-serif"; stretch = "75%"; break;
+            case "serif":          family = "serif"; break;
+            case "mono":           family = "monospace"; break;
+            case "cursive":        family = "casual,cursive"; break;
+            default:               family = "sans-serif"; break;
         }
+        return "font-family:" + family + ";"
+             + "font-weight:" + weight + ";"
+             + "font-stretch:" + stretch + ";";
     }
 
     private static String themeCss(ReaderSettings s, Palette p) {
-        String ff = fontFamily(s.font);
         int size = s.fontSize;
 
         return "html{background:" + p.bg + ";color:" + p.text + ";overflow-x:hidden;}"
             + "body{max-width:48em;margin:0 auto;padding:.8em 1em 4em;"
-            +   "font-family:" + ff + ";font-size:" + size + "px;line-height:1.5;"
+            +   fontCss(s) + "font-size:" + size + "px;line-height:1.5;"
             +   "-webkit-text-size-adjust:100%;-webkit-tap-highlight-color:transparent;"
             +   "overflow-wrap:break-word;touch-action:manipulation;}"
             + "h1,h2,h3,h4,h5,h6{line-height:1.3;margin:1em 0 .4em;font-weight:600;}"
@@ -128,18 +132,19 @@ public class ReaderRenderer {
             + "em{color:" + p.em + ";}"
             + "del{color:" + p.del + ";}"
             + "p{margin:.6em 0;}"
-            // Fullscreen editor, dynamic viewport height so keyboard resize doesn't jump scroll
-            + "#hashiru-editor{position:fixed;top:0;left:0;right:0;bottom:0;"
-            +   "width:100%;height:100vh;height:100dvh;"
-            +   "background:" + p.bg + ";color:" + p.text + ";"
+            // Editor — height driven by JS (visualViewport); padding-bottom gives the
+            // last line room to scroll above the keyboard.
+            + "#hashiru-editor{position:fixed;top:0;left:0;right:0;"
+            +   "width:100%;background:" + p.bg + ";color:" + p.text + ";"
             +   "font-family:ui-monospace,Menlo,Consolas,monospace;font-size:15px;line-height:1.5;"
             +   "border:none;outline:none;box-sizing:border-box;"
-            +   "padding:20px;padding-top:60px;resize:none;display:none;"
-            +   "z-index:9500;}"
-            // Small circular checkmark, top-right. Real position overridden by injection.
+            +   "padding:20px;padding-top:60px;padding-bottom:40vh;"
+            +   "resize:none;display:none;overflow-y:auto;z-index:9500;}"
+            // Pill button
             + "#hashiru-done{position:fixed;top:20px;right:16px;z-index:9600;"
-            +   "width:44px;height:44px;border-radius:22px;padding:0;border:none;"
-            +   "background:" + p.accent + ";color:#fff;font-size:20px;font-weight:700;"
+            +   "height:40px;padding:0 14px;border-radius:10px;border:none;"
+            +   "background:" + p.accent + ";color:#fff;"
+            +   "font-family:sans-serif;font-size:14px;font-weight:600;"
             +   "box-shadow:0 2px 8px rgba(0,0,0,.35);display:none;cursor:pointer;}";
     }
 
@@ -232,7 +237,7 @@ public class ReaderRenderer {
                 p.tableBorder="#e0e0e0"; p.thBg="#f8f9fa"; p.thFg="#333333";
                 p.strong="#27ae60"; p.em="#555555"; p.del="#999999";
                 p.accent="#27ae60"; break;
-            default: // dark (Dracula)
+            default:
                 p.bg="#282a36"; p.text="#f8f8f2"; p.border="#44475a";
                 p.h1="#ff79c6"; p.h2="#bd93f9"; p.h3="#8be9fd";
                 p.h4="#50fa7b"; p.h5="#ffb86c"; p.h6="#f1fa8c";
@@ -257,16 +262,82 @@ public class ReaderRenderer {
       + "if(!view||!editor||!doneBtn)return;"
       + "var current=srcEl?JSON.parse(srcEl.textContent):'';"
       + "var tapTimes=[];"
-      + "function enterEdit(){"
+
+      // Editor fills the visual viewport — shrinks when keyboard opens.
+      + "function fitEditor(){"
+      + "  try{"
+      + "    var vv=window.visualViewport;"
+      + "    var h=vv?vv.height:window.innerHeight;"
+      + "    editor.style.height=h+'px';"
+      + "  }catch(e){}"
+      + "}"
+      + "if(window.visualViewport){"
+      + "  window.visualViewport.addEventListener('resize',fitEditor);"
+      + "}"
+      + "window.addEventListener('resize',fitEditor);"
+
+      // Estimate source position of a tap in the rendered view by grabbing a
+      // short snippet near the tap and searching for it in the source.
+      + "function sourcePosFromPoint(x,y){"
+      + "  try{"
+      + "    var range=null;"
+      + "    if(document.caretRangeFromPoint)range=document.caretRangeFromPoint(x,y);"
+      + "    else if(document.caretPositionFromPoint){"
+      + "      var cp=document.caretPositionFromPoint(x,y);"
+      + "      if(cp)range={startContainer:cp.offsetNode,startOffset:cp.offset};"
+      + "    }"
+      + "    if(!range||!range.startContainer)return 0;"
+      + "    var node=range.startContainer;"
+      + "    if(node.nodeType!==3){"
+      + "      for(var i=0;i<node.childNodes.length;i++){"
+      + "        if(node.childNodes[i].nodeType===3){node=node.childNodes[i];break;}"
+      + "      }"
+      + "    }"
+      + "    if(node.nodeType!==3)return 0;"
+      + "    var text=node.textContent||'';"
+      + "    var off=Math.min(range.startOffset,text.length);"
+      + "    var start=Math.max(0,off-20);"
+      + "    var snippet=text.substring(start,Math.min(text.length,off+20));"
+      + "    if(!snippet)return 0;"
+      + "    var idx=current.indexOf(snippet);"
+      + "    if(idx>=0)return idx+(off-start);"
+      // Fallback: word before the caret
+      + "    var pre=text.substring(0,off);"
+      + "    var words=pre.split(/\\s+/);"
+      + "    var last=words[words.length-1];"
+      + "    if(last&&last.length>=3){"
+      + "      idx=current.indexOf(last);"
+      + "      if(idx>=0)return idx+last.length;"
+      + "    }"
+      + "    return 0;"
+      + "  }catch(e){return 0;}"
+      + "}"
+
+      + "function enterEditAt(x,y){"
       + "  if(editing)return;"
-      + "  editing=true;editor.value=current;"
-      + "  view.style.display='none';editor.style.display='block';"
+      + "  var pos=sourcePosFromPoint(x,y);"
+      + "  editing=true;"
+      + "  editor.value=current;"
+      + "  view.style.display='none';"
+      + "  editor.style.display='block';"
       + "  doneBtn.style.display='block';"
       + "  try{document.body.style.setProperty('padding-top','0','important');}catch(e){}"
+      + "  fitEditor();"
       + "  setTimeout(function(){"
-      + "    try{editor.focus();editor.setSelectionRange(0,0);editor.scrollTop=0;}catch(e){}"
+      + "    try{"
+      + "      editor.focus();"
+      + "      if(pos>=0&&pos<=editor.value.length){"
+      + "        editor.setSelectionRange(pos,pos);"
+      + "        var lineNum=(editor.value.substring(0,pos).match(/\\n/g)||[]).length;"
+      + "        editor.scrollTop=Math.max(0,(lineNum-4)*22);"
+      + "      }else{"
+      + "        editor.setSelectionRange(0,0);"
+      + "        editor.scrollTop=0;"
+      + "      }"
+      + "    }catch(e){}"
       + "  },60);"
       + "}"
+
       + "function exitEdit(save){"
       + "  if(!editing)return;editing=false;"
       + "  var v=editor.value;"
@@ -275,10 +346,11 @@ public class ReaderRenderer {
       + "  if(save&&v!==current){current=v;"
       + "    try{__HashiruNative.saveAndReload(v);}catch(e){}}"
       + "}"
-      // Triple-tap detection (3 taps within 500ms). Also cancels any text
-      // selection the browser might have kicked off on the third tap.
+
+      // Triple tap (3 taps within 500ms), cursor placed at third tap location.
       + "view.addEventListener('touchend',function(e){"
       + "  if(e.changedTouches.length!==1)return;"
+      + "  var t=e.changedTouches[0];"
       + "  var now=Date.now();"
       + "  tapTimes.push(now);"
       + "  while(tapTimes.length&&now-tapTimes[0]>500)tapTimes.shift();"
@@ -286,9 +358,10 @@ public class ReaderRenderer {
       + "    tapTimes=[];"
       + "    e.preventDefault();e.stopPropagation();"
       + "    try{window.getSelection().removeAllRanges();}catch(x){}"
-      + "    enterEdit();"
+      + "    enterEditAt(t.clientX,t.clientY);"
       + "  }"
       + "},{passive:false});"
+
       + "doneBtn.addEventListener('click',function(){exitEdit(true);});"
       + "})();";
 }

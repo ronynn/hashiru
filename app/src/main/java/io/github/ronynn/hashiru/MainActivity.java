@@ -38,7 +38,6 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
-        // Kill the native ActionBar so only the custom header shows.
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         setContentView(R.layout.activity_main);
 
@@ -85,7 +84,7 @@ public class MainActivity extends Activity {
         m.add(0, 1, 0, "Theme…");
         m.add(0, 2, 1, "Font…");
         m.add(0, 3, 2, "Font size…");
-        MenuItem eruda = m.add(0, 4, 3, "Enable Eruda console (HTML apps)");
+        MenuItem eruda = m.add(0, 4, 3, "Eruda");
         eruda.setCheckable(true);
         eruda.setChecked(prefs.getBoolean(ReaderSettings.KEY_ERUDA, false));
 
@@ -224,8 +223,12 @@ public class MainActivity extends Activity {
         String rel;
         if (folderPath.isEmpty()) rel = d.name;
         else rel = String.join("/", folderPath) + "/" + d.name;
+
         Intent i = new Intent(this, WebViewActivity.class);
-        i.addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT
+                | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+        // Unique data URI → OS makes a distinct task per file
+        i.setData(Uri.parse("hashiru://open/" + Uri.encode(rel)));
         i.putExtra(WebViewActivity.EXTRA_TREE_URI, treeUri.toString());
         i.putExtra(WebViewActivity.EXTRA_REL_PATH, rel);
         startActivity(i);

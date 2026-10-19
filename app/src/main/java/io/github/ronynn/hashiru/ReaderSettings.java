@@ -31,8 +31,8 @@ public class ReaderSettings {
 
     public static final int[] SIZE_VALUES = { 14, 16, 17, 18, 20, 22, 24 };
     public static final String[] SIZE_LABELS = {
-        "Smaller (14)", "Small (16)", "Medium (17)", "Large (18)",
-        "Huge (20)", "Massive (22)", "Humongous (24)"
+        "Smol · 14", "Smol+ · 16", "Normal · 17", "Comfy · 18",
+        "Chonk · 20", "Big Chonk · 22", "ABSOLUTE UNIT · 24"
     };
 
     public String theme = "dark";
