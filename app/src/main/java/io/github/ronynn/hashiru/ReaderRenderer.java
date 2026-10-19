@@ -3,9 +3,13 @@ package io.github.ronynn.hashiru;
 import org.commonmark.Extension;
 import org.commonmark.ext.gfm.strikethrough.StrikethroughExtension;
 import org.commonmark.ext.gfm.tables.TablesExtension;
+import org.commonmark.node.HardLineBreak;
+import org.commonmark.node.Node;
+import org.commonmark.node.SoftLineBreak;
 import org.commonmark.parser.Parser;
 import org.commonmark.renderer.html.HtmlRenderer;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -28,11 +32,19 @@ public class ReaderRenderer {
                                 ReaderSettings settings,
                                 int sbhDp, boolean blurEnabled) {
         boolean isMd = ext.equals("md") || ext.equals("markdown") || ext.equals("txt");
+        boolean isCsv = ext.equals("csv");
 
         String body;
-        if (isMd) {
-            String srcForParser = ext.equals("txt") ? softBreaksToHard(raw) : raw;
-            body = RENDERER.render(PARSER.parse(srcForParser));
+        if (isCsv) {
+            body = renderCsv(raw);
+        } else if (isMd) {
+            // Parse, then promote every SoftLineBreak → HardLineBreak so single
+            // newlines render as visible line breaks (matches note-taking
+            // expectations). Code blocks contain literal content, not
+            // line-break nodes, so code samples are untouched.
+            Node doc = PARSER.parse(raw);
+            convertSoftBreaksToHard(doc);
+            body = RENDERER.render(doc);
             body = body.replace("<table>", "<div class=\"table-wrap\"><table>")
                        .replace("</table>", "</table></div>");
         } else {
@@ -41,23 +53,91 @@ public class ReaderRenderer {
         return wrap(body, raw, settings, sbhDp, blurEnabled);
     }
 
-    private static String softBreaksToHard(String raw) {
-        if (raw == null || raw.isEmpty()) return raw;
-        if (raw.indexOf('\r') >= 0) raw = raw.replace("\r\n", "\n").replace('\r', '\n');
-        StringBuilder sb = new StringBuilder(raw.length() + raw.length() / 8);
-        char prev = '\n';
-        for (int i = 0; i < raw.length(); i++) {
-            char c = raw.charAt(i);
-            if (c == '\n') {
-                if (prev == '\n') sb.append('\n');
-                else sb.append("  \n");
+    private static void convertSoftBreaksToHard(Node node) {
+        Node child = node.getFirstChild();
+        while (child != null) {
+            Node next = child.getNext();
+            if (child instanceof SoftLineBreak) {
+                Node hard = new HardLineBreak();
+                child.insertAfter(hard);
+                child.unlink();
             } else {
-                sb.append(c);
+                convertSoftBreaksToHard(child);
             }
-            prev = c;
+            child = next;
         }
+    }
+
+    // ---- CSV ----
+
+    private static String renderCsv(String raw) {
+        List<String[]> rows = parseCsv(raw);
+        if (rows.isEmpty()) return "<p><em>(empty CSV)</em></p>";
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("<div class=\"table-wrap\"><table>");
+        String[] header = rows.get(0);
+        sb.append("<thead><tr>");
+        for (String h : header)
+            sb.append("<th>").append(escapeHtml(h)).append("</th>");
+        sb.append("</tr></thead><tbody>");
+        for (int i = 1; i < rows.size(); i++) {
+            String[] row = rows.get(i);
+            sb.append("<tr>");
+            for (String cell : row)
+                sb.append("<td>").append(escapeHtml(cell)).append("</td>");
+            sb.append("</tr>");
+        }
+        sb.append("</tbody></table></div>");
         return sb.toString();
     }
+
+    private static List<String[]> parseCsv(String text) {
+        List<String[]> rows = new ArrayList<>();
+        if (text == null) return rows;
+        List<String> current = new ArrayList<>();
+        StringBuilder field = new StringBuilder();
+        boolean inQuotes = false;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (inQuotes) {
+                if (c == '"') {
+                    if (i + 1 < text.length() && text.charAt(i + 1) == '"') {
+                        field.append('"');
+                        i++;
+                    } else {
+                        inQuotes = false;
+                    }
+                } else {
+                    field.append(c);
+                }
+            } else {
+                if (c == '"') {
+                    inQuotes = true;
+                } else if (c == ',') {
+                    current.add(field.toString());
+                    field.setLength(0);
+                } else if (c == '\n' || c == '\r') {
+                    current.add(field.toString());
+                    field.setLength(0);
+                    boolean blank = current.size() == 1 && current.get(0).isEmpty();
+                    if (!blank) rows.add(current.toArray(new String[0]));
+                    current = new ArrayList<>();
+                    if (c == '\r' && i + 1 < text.length() && text.charAt(i + 1) == '\n') i++;
+                } else {
+                    field.append(c);
+                }
+            }
+        }
+        if (field.length() > 0 || !current.isEmpty()) {
+            current.add(field.toString());
+            boolean blank = current.size() == 1 && current.get(0).isEmpty();
+            if (!blank) rows.add(current.toArray(new String[0]));
+        }
+        return rows;
+    }
+
+    // ---- helpers ----
 
     public static int backgroundArgb(String theme) {
         switch (theme) {
@@ -135,7 +215,7 @@ public class ReaderRenderer {
         int size = s.fontSize;
         int topPad = sbhDp > 0 ? sbhDp + 4 : 8;
         int btnTop = sbhDp > 0 ? sbhDp + 12 : 12;
-        int sbTop = sbhDp > 0 ? sbhDp + 60 : 60;
+        int sbTop = sbhDp > 0 ? sbhDp + 8 : 8;
         int editorTop = sbhDp > 0 ? sbhDp + 68 : 68;
 
         boolean showBlur = blurEnabled && sbhDp > 0;
@@ -163,13 +243,13 @@ public class ReaderRenderer {
               + "z-index:9700;pointer-events:none;}"
             : "#hashiru-statusblur{display:none;}";
 
-        String glassButtonCommon =
+        String glassButton =
             "position:fixed;"
             + "top:" + btnTop + "px;right:16px;"
             + "width:44px;height:44px;padding:0;margin:0;"
             + "border-radius:50%;"
-            + "border:1px solid rgba(127,127,127,0.3);"
-            + "background:rgba(127,127,127,0.18);"
+            + "border:1px solid rgba(127,127,127,0.22);"
+            + "background:rgba(127,127,127,0.10);"
             + "-webkit-backdrop-filter:blur(16px) saturate(160%);"
             + "backdrop-filter:blur(16px) saturate(160%);"
             + "color:" + p.text + ";"
@@ -177,7 +257,7 @@ public class ReaderRenderer {
             + "box-sizing:border-box;z-index:9600;cursor:pointer;"
             + "-webkit-tap-highlight-color:transparent;"
             + "align-items:center;justify-content:center;"
-            + "box-shadow:0 2px 8px rgba(0,0,0,0.15);";
+            + "box-shadow:0 2px 8px rgba(0,0,0,0.10);";
 
         return "html{background:" + p.bg + ";color:" + p.text + ";overflow-x:hidden;}"
             + "body{max-width:48em;margin:0 auto;"
@@ -225,26 +305,33 @@ public class ReaderRenderer {
             + "hr{border:none;border-top:1px solid " + p.hr + ";margin:1.5em 0;}"
             + "img{max-width:100%;height:auto;border-radius:6px;}"
             + "p{margin:.6em 0;}"
-            // Fullscreen editor at 13px monospace
+            // Editor
             + "#hashiru-editor{position:fixed;top:0;left:0;right:0;"
             +   "width:100%;height:100vh;height:100dvh;"
             +   "background:" + p.bg + ";color:" + p.text + ";"
-            +   "font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;line-height:1.5;"
+            +   "font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.5;"
             +   "border:none;outline:none;box-sizing:border-box;"
             +   "padding:20px;padding-top:" + editorTop + "px;padding-bottom:40vh;"
             +   "resize:none;display:none;overflow-y:auto;z-index:9500;}"
-            // Glassy edit / done buttons
-            + "#hashiru-edit-btn{" + glassButtonCommon + "display:flex;}"
-            + "#hashiru-done{" + glassButtonCommon + "display:none;}"
+            // Glassy buttons
+            + "#hashiru-edit-btn{" + glassButton + "display:flex;}"
+            + "#hashiru-done{" + glassButton + "display:none;}"
             + "#hashiru-edit-btn svg,#hashiru-done svg{width:20px;height:20px;display:block;}"
-            // Scrollbar
+            // Scrollbar (opacity-based hiding so clientHeight stays measurable)
             + "#hashiru-sb-track{position:fixed;right:0;"
-            +   "top:" + sbTop + "px;bottom:20px;width:14px;"
-            +   "z-index:8000;touch-action:none;cursor:pointer;display:none;}"
+            +   "top:" + sbTop + "px;bottom:20px;width:20px;"
+            +   "z-index:8000;touch-action:none;cursor:pointer;"
+            +   "opacity:0;pointer-events:none;transition:opacity .15s;}"
             + "#hashiru-sb-thumb{position:absolute;right:3px;top:0;"
             +   "width:4px;min-height:24px;"
             +   "background:rgba(127,127,127,0.55);border-radius:2px;"
             +   "pointer-events:none;}"
+            // Landscape tweaks
+            + "@media (orientation:landscape){"
+            +   "#hashiru-statusblur{display:none !important;}"
+            +   "#hashiru-editor{left:50%;right:auto;width:90%;max-width:900px;"
+            +     "transform:translateX(-50%);}"
+            + "}"
             + blurRule;
     }
 
@@ -374,7 +461,6 @@ public class ReaderRenderer {
       + "var editing=false;"
       + "var editStartScrollY=0;"
 
-      // Editor height follows visualViewport (keyboard aware)
       + "function fitEditor(){"
       + "  try{var vv=window.visualViewport;"
       + "    var h=vv?vv.height:window.innerHeight;"
@@ -387,15 +473,17 @@ public class ReaderRenderer {
 
       // Scrollbar
       + "function updateScrollbar(){"
-      + "  if(!sbTrack||!sbThumb||editing)return;"
+      + "  if(!sbTrack||!sbThumb)return;"
+      + "  if(editing){sbTrack.style.opacity='0';sbTrack.style.pointerEvents='none';return;}"
       + "  try{"
       + "    var doc=document.documentElement;"
       + "    var total=doc.scrollHeight;"
       + "    var vp=window.innerHeight;"
       + "    var max=total-vp;"
-      + "    var trackH=sbTrack.clientHeight;"
-      + "    if(max<=0||trackH<=0){sbTrack.style.display='none';return;}"
-      + "    sbTrack.style.display='block';"
+      + "    if(max<=4){sbTrack.style.opacity='0';sbTrack.style.pointerEvents='none';return;}"
+      + "    sbTrack.style.opacity='1';sbTrack.style.pointerEvents='auto';"
+      + "    var trackH=sbTrack.getBoundingClientRect().height;"
+      + "    if(trackH<=0)return;"
       + "    var thumbH=Math.max(24,trackH*vp/total);"
       + "    var thumbTop=(window.scrollY/max)*(trackH-thumbH);"
       + "    sbThumb.style.height=thumbH+'px';"
@@ -414,25 +502,21 @@ public class ReaderRenderer {
       + "if(sbTrack){"
       + "  var dragging=false;"
       + "  sbTrack.addEventListener('touchstart',function(e){"
-      + "    dragging=true;scrollFromTrackY(e.touches[0].clientY);"
-      + "    e.preventDefault();"
+      + "    dragging=true;scrollFromTrackY(e.touches[0].clientY);e.preventDefault();"
       + "  },{passive:false});"
       + "  sbTrack.addEventListener('touchmove',function(e){"
-      + "    if(!dragging)return;"
-      + "    scrollFromTrackY(e.touches[0].clientY);"
-      + "    e.preventDefault();"
+      + "    if(!dragging)return;scrollFromTrackY(e.touches[0].clientY);e.preventDefault();"
       + "  },{passive:false});"
-      + "  sbTrack.addEventListener('touchend',function(e){"
-      + "    dragging=false;e.preventDefault();"
-      + "  },{passive:false});"
+      + "  sbTrack.addEventListener('touchend',function(e){dragging=false;e.preventDefault();},{passive:false});"
       + "  window.addEventListener('scroll',updateScrollbar,{passive:true});"
       + "  window.addEventListener('resize',updateScrollbar);"
+      + "  window.addEventListener('load',updateScrollbar);"
       + "  setTimeout(updateScrollbar,50);"
       + "  setTimeout(updateScrollbar,200);"
       + "  setTimeout(updateScrollbar,500);"
       + "}"
 
-      // Enter edit at current scroll position
+      // Edit
       + "function enterEdit(){"
       + "  if(editing)return;"
       + "  editStartScrollY=window.scrollY||window.pageYOffset||0;"
@@ -445,7 +529,7 @@ public class ReaderRenderer {
       + "  editor.style.display='block';"
       + "  editBtn.style.display='none';"
       + "  doneBtn.style.display='flex';"
-      + "  if(sbTrack)sbTrack.style.display='none';"
+      + "  if(sbTrack){sbTrack.style.opacity='0';sbTrack.style.pointerEvents='none';}"
       + "  try{document.body.style.setProperty('padding-top','0','important');}catch(e){}"
       + "  fitEditor();"
       + "  setTimeout(function(){"

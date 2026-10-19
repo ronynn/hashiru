@@ -4,7 +4,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:icon="@drawable/ic_launcher"
         android:label="@string/app_name"
         android:networkSecurityConfig="@xml/network_security_config"
@@ -24,10 +24,9 @@
             android:exported="true"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:windowSoftInputMode="adjustResize"
-            android:documentLaunchMode="always"
+            android:documentLaunchMode="intoExisting"
             android:theme="@style/WebViewTheme">
 
-            <!-- Markdown / plain text / reader formats (rendered safely, no JS from content) -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -39,7 +38,6 @@
                 <data android:scheme="file"    android:mimeType="text/x-markdown" />
             </intent-filter>
 
-            <!-- HTML files (rendered as HTML, JS enabled — this is the app runner) -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -49,7 +47,16 @@
                 <data android:scheme="file"    android:mimeType="application/xhtml+xml" />
             </intent-filter>
 
-            <!-- Path-pattern fallbacks for file managers that send generic MIME -->
+            <!-- CSV -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" android:mimeType="text/csv" />
+                <data android:scheme="file"    android:mimeType="text/csv" />
+                <data android:scheme="content" android:mimeType="text/comma-separated-values" />
+                <data android:scheme="file"    android:mimeType="text/comma-separated-values" />
+            </intent-filter>
+
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -79,6 +86,12 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:scheme="file" android:host="*"
                       android:pathPattern=".*\\.htm" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="file" android:host="*"
+                      android:pathPattern=".*\\.csv" />
             </intent-filter>
         </activity>
     </application>

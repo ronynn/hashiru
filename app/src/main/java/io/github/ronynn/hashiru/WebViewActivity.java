@@ -66,9 +66,6 @@ public class WebViewActivity extends Activity {
 
     private static final int MAX_READER_BYTES = 5 * 1024 * 1024;
 
-    // Global map of open documents → activity. Used to avoid duplicate tasks
-    // when the same file is reopened via the file manager (external ACTION_VIEW
-    // doesn't reuse tasks automatically).
     private static final Map<String, WeakReference<WebViewActivity>> OPEN_DOCS
             = new ConcurrentHashMap<>();
 
@@ -127,7 +124,6 @@ public class WebViewActivity extends Activity {
             directUri = getIntent().getData();
         }
 
-        // Determine identity BEFORE opening anything
         if (treeUriStr != null && relPath != null) {
             ident = "tree|" + treeUriStr + "|" + relPath;
             currentExt = extOf(relPath);
@@ -140,7 +136,6 @@ public class WebViewActivity extends Activity {
         }
         isReader = isReaderExt(currentExt);
 
-        // Dedup: bring existing task forward instead of creating another window
         WebViewActivity existing = findExisting(ident);
         if (existing != null && existing != this && !existing.isFinishing()) {
             try {
@@ -151,7 +146,6 @@ public class WebViewActivity extends Activity {
                 return;
             } catch (Exception e) {
                 Log.w(TAG, "moveTaskToFront failed", e);
-                // fall through → open normally
             }
         }
         registerOpen(ident, this);
@@ -262,9 +256,18 @@ public class WebViewActivity extends Activity {
         }
     }
 
-    // ==================================================================
-    //  Dedup registry
-    // ==================================================================
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (web == null) return;
+        if (isReader) {
+            if (pendingRestoreY < 0) pendingRestoreY = web.getScrollY();
+            reloadCurrentFile();
+        } else {
+            web.reload();
+        }
+    }
 
     private static WebViewActivity findExisting(String ident) {
         if (ident == null) return null;
@@ -282,10 +285,6 @@ public class WebViewActivity extends Activity {
         WeakReference<WebViewActivity> ref = OPEN_DOCS.get(ident);
         if (ref != null && ref.get() == act) OPEN_DOCS.remove(ident);
     }
-
-    // ==================================================================
-    //  Load
-    // ==================================================================
 
     private void openFromTree(String treeUriStr, String relPath) {
         posKey = treeUriStr + "|" + relPath;
@@ -342,12 +341,6 @@ public class WebViewActivity extends Activity {
                 + "&blur=" + (settings.blurEnabled ? "1" : "0");
     }
 
-    /**
-     * Always returns status-bar height in CSS px (0 only for non-reader HTML).
-     * Keeping this stable across orientations means no reload is needed when
-     * rotating — the baked-in padding stays valid in both orientations. In
-     * landscape fullscreen it's just a small top margin.
-     */
     private int currentSbhDp() {
         if (!isReader) return 0;
         if (statusBarHeight <= 0) return 0;
@@ -370,10 +363,6 @@ public class WebViewActivity extends Activity {
             try { v.evaluateJavascript(js, null); } catch (Exception ignored) {}
         }, 30);
     }
-
-    // ==================================================================
-    //  Lifecycle
-    // ==================================================================
 
     @Override
     protected void onResume() {
@@ -408,8 +397,9 @@ public class WebViewActivity extends Activity {
     @Override
     public void onConfigurationChanged(Configuration cfg) {
         super.onConfigurationChanged(cfg);
-        // Just reapply system UI — no reload, so scroll position stays put.
         applyOrientation(cfg.orientation);
+        // No reload — CSS media query handles landscape blur/editor width,
+        // and padding value is the same in both orientations.
     }
 
     private void reloadCurrentFile() {
@@ -435,10 +425,6 @@ public class WebViewActivity extends Activity {
             } catch (IOException ignored) {}
         }
     }
-
-    // ==================================================================
-    //  JS bridge
-    // ==================================================================
 
     public class SaveBridge {
 
@@ -486,10 +472,6 @@ public class WebViewActivity extends Activity {
             });
         }
     }
-
-    // ==================================================================
-    //  Save helpers
-    // ==================================================================
 
     private boolean saveSourceSync(String source) {
         if (source == null) return false;
@@ -547,10 +529,6 @@ public class WebViewActivity extends Activity {
         }
         return null;
     }
-
-    // ==================================================================
-    //  Page JS helpers
-    // ==================================================================
 
     private void injectTapHighlightFix() {
         if (web == null) return;
@@ -616,10 +594,6 @@ public class WebViewActivity extends Activity {
             + "})();";
         web.evaluateJavascript(js, null);
     }
-
-    // ==================================================================
-    //  Media
-    // ==================================================================
 
     private void ensureMediaSession() {
         if (Build.VERSION.SDK_INT < 21) return;
@@ -754,15 +728,9 @@ public class WebViewActivity extends Activity {
         notificationManager().createNotificationChannel(ch);
     }
 
-    // ==================================================================
-    //  Downloads
-    // ==================================================================
-
     private void handleDownload(String url, String mimeFromHeader) {
         if (url == null) return;
-
         if (url.startsWith("blob:")) { requestBlobAsBase64(url, mimeFromHeader); return; }
-
         if (url.startsWith("data:")) {
             int comma = url.indexOf(',');
             if (comma < 0) return;
@@ -783,7 +751,6 @@ public class WebViewActivity extends Activity {
             }
             return;
         }
-
         try {
             Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -854,10 +821,6 @@ public class WebViewActivity extends Activity {
         return "download";
     }
 
-    // ==================================================================
-    //  Helpers
-    // ==================================================================
-
     private String extOf(String pathOrName) {
         if (pathOrName == null) return "";
         int slash = pathOrName.lastIndexOf('/');
@@ -868,7 +831,8 @@ public class WebViewActivity extends Activity {
 
     private boolean isReaderExt(String ext) {
         return ext.equals("md") || ext.equals("markdown")
-                || ext.equals("txt") || ext.equals("org") || ext.equals("twee");
+                || ext.equals("txt") || ext.equals("org") || ext.equals("twee")
+                || ext.equals("csv");
     }
 
     private String queryDisplayName(Uri uri) {
@@ -955,17 +919,13 @@ public class WebViewActivity extends Activity {
         return sb.toString();
     }
 
-    // ==================================================================
-    //  System UI
-    // ==================================================================
-
     private void applyOrientation(int orientation) {
         Window win = getWindow();
         View decor = win.getDecorView();
         WindowManager.LayoutParams lp = win.getAttributes();
 
-        // Landscape → fullscreen immersive for BOTH reader and HTML apps.
-        if (orientation == Configuration.ORIENTATION_LANDSCAPE) {
+        // HTML in landscape → fullscreen immersive.
+        if (!isReader && orientation == Configuration.ORIENTATION_LANDSCAPE) {
             decor.setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                             | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
@@ -984,6 +944,10 @@ public class WebViewActivity extends Activity {
         }
 
         if (isReader) {
+            // Reader portrait AND landscape: transparent status bar, content
+            // flows under it (status bar itself stays visible). Padding baked
+            // into HTML keeps text below the bar. Blur is suppressed by CSS
+            // in landscape.
             win.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
             win.setStatusBarColor(Color.TRANSPARENT);
             win.setNavigationBarColor(BAR_COLOR_HTML);
@@ -996,6 +960,7 @@ public class WebViewActivity extends Activity {
                 lp.layoutInDisplayCutoutMode =
                         WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
         } else {
+            // HTML portrait: opaque chrome.
             win.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
             win.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
             win.setStatusBarColor(BAR_COLOR_HTML);
@@ -1007,10 +972,6 @@ public class WebViewActivity extends Activity {
         }
         win.setAttributes(lp);
     }
-
-    // ==================================================================
-    //  Cleanup
-    // ==================================================================
 
     private void savePosition() {
         if (web == null || posPrefs == null || posKey == null) return;

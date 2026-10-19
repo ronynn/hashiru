@@ -44,6 +44,9 @@ public class FileListAdapter extends BaseAdapter {
     private String iconFor(String n) {
         if (n == null) return "📄";
         String s = n.toLowerCase();
+        if (s.endsWith(".md") || s.endsWith(".markdown")) return "📝";
+        if (s.endsWith(".txt")) return "📃";
+        if (s.endsWith(".csv")) return "📊";
         if (s.endsWith(".html") || s.endsWith(".htm")) return "🌐";
         if (s.endsWith(".js") || s.endsWith(".mjs")) return "📜";
         if (s.endsWith(".css")) return "🎨";
