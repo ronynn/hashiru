@@ -26,15 +26,14 @@ public class ReaderSettings {
         "Sans", "Sans Light", "Sans Condensed", "Serif", "Monospace"
     };
 
-    public static final int[] SIZE_VALUES = { 15, 17, 20, 23, 27 };
+    public static final int[] SIZE_VALUES = { 12, 14, 15, 16, 18 };
     public static final String[] SIZE_LABELS = {
-        "Smol · 15", "Normal · 17", "Chonk · 20",
-        "Big Chonk · 23", "ABSOLUTE · 27"
+        "Smol · 12", "Weazel · 14", "Comfy · 15", "Thick · 16", "Chonky · 18"
     };
 
     public String theme = "dark";
     public String font = "sans";
-    public int fontSize = 17;
+    public int fontSize = 15;
     public boolean blurEnabled = true;
     public boolean erudaEnabled = false;
 
@@ -43,7 +42,7 @@ public class ReaderSettings {
         ReaderSettings s = new ReaderSettings();
         s.theme = p.getString(KEY_THEME, "dark");
         s.font = p.getString(KEY_FONT, "sans");
-        s.fontSize = p.getInt(KEY_SIZE, 17);
+        s.fontSize = p.getInt(KEY_SIZE, 15);
         s.blurEnabled = p.getBoolean(KEY_BLUR, true);
         s.erudaEnabled = p.getBoolean(KEY_ERUDA, false);
         return s;

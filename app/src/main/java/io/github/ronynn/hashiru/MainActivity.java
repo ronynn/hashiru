@@ -84,7 +84,10 @@ public class MainActivity extends Activity {
         m.add(0, 1, 0, "Theme…");
         m.add(0, 2, 1, "Font…");
         m.add(0, 3, 2, "Font size…");
-        MenuItem eruda = m.add(0, 4, 3, "Eruda");
+        MenuItem blur = m.add(0, 4, 3, "Blur status bar");
+        blur.setCheckable(true);
+        blur.setChecked(prefs.getBoolean(ReaderSettings.KEY_BLUR, true));
+        MenuItem eruda = m.add(0, 5, 4, "Eruda");
         eruda.setCheckable(true);
         eruda.setChecked(prefs.getBoolean(ReaderSettings.KEY_ERUDA, false));
 
@@ -94,6 +97,12 @@ public class MainActivity extends Activity {
                 case 2: showFontDialog();  return true;
                 case 3: showSizeDialog();  return true;
                 case 4: {
+                    boolean v = !item.isChecked();
+                    prefs.edit().putBoolean(ReaderSettings.KEY_BLUR, v).apply();
+                    item.setChecked(v);
+                    return true;
+                }
+                case 5: {
                     boolean v = !item.isChecked();
                     prefs.edit().putBoolean(ReaderSettings.KEY_ERUDA, v).apply();
                     item.setChecked(v);
@@ -135,7 +144,7 @@ public class MainActivity extends Activity {
 
     private void showSizeDialog() {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        int cur = prefs.getInt(ReaderSettings.KEY_SIZE, 17);
+        int cur = prefs.getInt(ReaderSettings.KEY_SIZE, 15);
         int idx = 2;
         for (int i = 0; i < ReaderSettings.SIZE_VALUES.length; i++)
             if (ReaderSettings.SIZE_VALUES[i] == cur) idx = i;
@@ -225,10 +234,15 @@ public class MainActivity extends Activity {
         else rel = String.join("/", folderPath) + "/" + d.name;
 
         Intent i = new Intent(this, WebViewActivity.class);
-        i.addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT
-                | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
-        // Unique data URI → OS makes a distinct task per file
-        i.setData(Uri.parse("hashiru://open/" + Uri.encode(rel)));
+        // NEW_DOCUMENT without MULTIPLE_TASK → OS looks for an existing task
+        // whose base intent matches (by data URI). Same file → brought forward.
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT);
+
+        // Identity for the OS: (tree URI, rel path). Same file in the same
+        // tree always maps to the same URI → no duplicate task.
+        String identity = treeUri.toString() + "|" + rel;
+        i.setData(Uri.parse("hashiru://open/" + Uri.encode(identity)));
+
         i.putExtra(WebViewActivity.EXTRA_TREE_URI, treeUri.toString());
         i.putExtra(WebViewActivity.EXTRA_REL_PATH, rel);
         startActivity(i);

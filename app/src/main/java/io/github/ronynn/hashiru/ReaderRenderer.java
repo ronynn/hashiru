@@ -18,8 +18,6 @@ public class ReaderRenderer {
 
     private static final Parser PARSER = Parser.builder().extensions(EXTENSIONS).build();
 
-    // escapeHtml(true): raw HTML in source is text → no <script>, <iframe>, etc.
-    // sanitizeUrls(true): strips javascript:/vbscript:/file: from links/images.
     private static final HtmlRenderer RENDERER = HtmlRenderer.builder()
             .extensions(EXTENSIONS)
             .escapeHtml(true)
@@ -33,10 +31,6 @@ public class ReaderRenderer {
 
         String body;
         if (isMd) {
-            // .txt: preprocess so single newlines render as visible line breaks
-            // (matches what people who write .txt expect). .md keeps strict
-            // CommonMark semantics (single \n = soft break = space).
-            // The ORIGINAL raw is still passed to wrap() so edits round-trip clean.
             String srcForParser = ext.equals("txt") ? softBreaksToHard(raw) : raw;
             body = RENDERER.render(PARSER.parse(srcForParser));
             body = body.replace("<table>", "<div class=\"table-wrap\"><table>")
@@ -47,24 +41,16 @@ public class ReaderRenderer {
         return wrap(body, raw, settings, sbhDp, blurEnabled);
     }
 
-    /**
-     * Adds "  " (two trailing spaces) before every non-blank newline, which
-     * CommonMark treats as a hard line break. Converts "line1\nline2" from
-     * rendering as "line1 line2" into "line1<br>line2".
-     */
     private static String softBreaksToHard(String raw) {
         if (raw == null || raw.isEmpty()) return raw;
-        // Normalize CR so \r\n doesn't produce double content.
-        if (raw.indexOf('\r') >= 0) {
-            raw = raw.replace("\r\n", "\n").replace('\r', '\n');
-        }
+        if (raw.indexOf('\r') >= 0) raw = raw.replace("\r\n", "\n").replace('\r', '\n');
         StringBuilder sb = new StringBuilder(raw.length() + raw.length() / 8);
         char prev = '\n';
         for (int i = 0; i < raw.length(); i++) {
             char c = raw.charAt(i);
             if (c == '\n') {
-                if (prev == '\n') sb.append('\n');   // blank line stays blank
-                else sb.append("  \n");              // hard break
+                if (prev == '\n') sb.append('\n');
+                else sb.append("  \n");
             } else {
                 sb.append(c);
             }
@@ -95,10 +81,17 @@ public class ReaderRenderer {
 
         return "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
              + "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">"
+             + "<meta name=\"referrer\" content=\"no-referrer\">"
              + "<style>" + css + "</style></head><body>"
              + "<div id=\"hashiru-view\">" + body + "</div>"
              + "<textarea id=\"hashiru-editor\" spellcheck=\"false\" autocorrect=\"off\" autocomplete=\"off\"></textarea>"
-             + "<button id=\"hashiru-done\" type=\"button\">✓</button>"
+             + "<button id=\"hashiru-edit-btn\" type=\"button\" aria-label=\"Edit\">"
+             +   "<svg viewBox=\"0 0 24 24\" fill=\"currentColor\"><path d=\"M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z\"/></svg>"
+             + "</button>"
+             + "<button id=\"hashiru-done\" type=\"button\" aria-label=\"Done\">"
+             +   "<svg viewBox=\"0 0 24 24\" fill=\"currentColor\"><path d=\"M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z\"/></svg>"
+             + "</button>"
+             + "<div id=\"hashiru-sb-track\"><div id=\"hashiru-sb-thumb\"></div></div>"
              + "<div id=\"hashiru-statusblur\"></div>"
              + "<script id=\"hashiru-source\" type=\"application/json\">" + sourceJson + "</script>"
              + "<script>" + EDIT_SCRIPT + "</script>"
@@ -142,6 +135,7 @@ public class ReaderRenderer {
         int size = s.fontSize;
         int topPad = sbhDp > 0 ? sbhDp + 4 : 8;
         int btnTop = sbhDp > 0 ? sbhDp + 12 : 12;
+        int sbTop = sbhDp > 0 ? sbhDp + 60 : 60;
         int editorTop = sbhDp > 0 ? sbhDp + 68 : 68;
 
         boolean showBlur = blurEnabled && sbhDp > 0;
@@ -168,6 +162,22 @@ public class ReaderRenderer {
               +   "black 0%,black 40%,transparent 100%);"
               + "z-index:9700;pointer-events:none;}"
             : "#hashiru-statusblur{display:none;}";
+
+        String glassButtonCommon =
+            "position:fixed;"
+            + "top:" + btnTop + "px;right:16px;"
+            + "width:44px;height:44px;padding:0;margin:0;"
+            + "border-radius:50%;"
+            + "border:1px solid rgba(127,127,127,0.3);"
+            + "background:rgba(127,127,127,0.18);"
+            + "-webkit-backdrop-filter:blur(16px) saturate(160%);"
+            + "backdrop-filter:blur(16px) saturate(160%);"
+            + "color:" + p.text + ";"
+            + "font-family:sans-serif;font-size:20px;"
+            + "box-sizing:border-box;z-index:9600;cursor:pointer;"
+            + "-webkit-tap-highlight-color:transparent;"
+            + "align-items:center;justify-content:center;"
+            + "box-shadow:0 2px 8px rgba(0,0,0,0.15);";
 
         return "html{background:" + p.bg + ";color:" + p.text + ";overflow-x:hidden;}"
             + "body{max-width:48em;margin:0 auto;"
@@ -215,20 +225,26 @@ public class ReaderRenderer {
             + "hr{border:none;border-top:1px solid " + p.hr + ";margin:1.5em 0;}"
             + "img{max-width:100%;height:auto;border-radius:6px;}"
             + "p{margin:.6em 0;}"
+            // Fullscreen editor at 13px monospace
             + "#hashiru-editor{position:fixed;top:0;left:0;right:0;"
             +   "width:100%;height:100vh;height:100dvh;"
             +   "background:" + p.bg + ";color:" + p.text + ";"
-            +   "font-family:ui-monospace,Menlo,Consolas,monospace;font-size:15px;line-height:1.5;"
+            +   "font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;line-height:1.5;"
             +   "border:none;outline:none;box-sizing:border-box;"
             +   "padding:20px;padding-top:" + editorTop + "px;padding-bottom:40vh;"
             +   "resize:none;display:none;overflow-y:auto;z-index:9500;}"
-            + "#hashiru-done{position:fixed;top:" + btnTop + "px;right:16px;z-index:9600;"
-            +   "width:44px;height:44px;padding:0;"
-            +   "border-radius:50%;border:none;"
-            +   "background:" + p.accent + ";color:#fff;"
-            +   "font-family:sans-serif;font-size:22px;font-weight:700;"
-            +   "line-height:44px;text-align:center;"
-            +   "box-shadow:0 2px 8px rgba(0,0,0,.35);display:none;cursor:pointer;}"
+            // Glassy edit / done buttons
+            + "#hashiru-edit-btn{" + glassButtonCommon + "display:flex;}"
+            + "#hashiru-done{" + glassButtonCommon + "display:none;}"
+            + "#hashiru-edit-btn svg,#hashiru-done svg{width:20px;height:20px;display:block;}"
+            // Scrollbar
+            + "#hashiru-sb-track{position:fixed;right:0;"
+            +   "top:" + sbTop + "px;bottom:20px;width:14px;"
+            +   "z-index:8000;touch-action:none;cursor:pointer;display:none;}"
+            + "#hashiru-sb-thumb{position:absolute;right:3px;top:0;"
+            +   "width:4px;min-height:24px;"
+            +   "background:rgba(127,127,127,0.55);border-radius:2px;"
+            +   "pointer-events:none;}"
             + blurRule;
     }
 
@@ -346,16 +362,19 @@ public class ReaderRenderer {
 
     private static final String EDIT_SCRIPT =
         "(function(){"
-      + "var editing=false;"
       + "var view=document.getElementById('hashiru-view');"
       + "var editor=document.getElementById('hashiru-editor');"
       + "var doneBtn=document.getElementById('hashiru-done');"
+      + "var editBtn=document.getElementById('hashiru-edit-btn');"
+      + "var sbTrack=document.getElementById('hashiru-sb-track');"
+      + "var sbThumb=document.getElementById('hashiru-sb-thumb');"
       + "var srcEl=document.getElementById('hashiru-source');"
-      + "if(!view||!editor||!doneBtn)return;"
+      + "if(!view||!editor||!doneBtn||!editBtn)return;"
       + "var current=srcEl?JSON.parse(srcEl.textContent):'';"
-      + "var tapTimes=[];"
+      + "var editing=false;"
       + "var editStartScrollY=0;"
 
+      // Editor height follows visualViewport (keyboard aware)
       + "function fitEditor(){"
       + "  try{var vv=window.visualViewport;"
       + "    var h=vv?vv.height:window.innerHeight;"
@@ -366,103 +385,100 @@ public class ReaderRenderer {
       + "  window.visualViewport.addEventListener('resize',fitEditor);"
       + "window.addEventListener('resize',fitEditor);"
 
-      + "function sourcePosFromPoint(x,y){"
+      // Scrollbar
+      + "function updateScrollbar(){"
+      + "  if(!sbTrack||!sbThumb||editing)return;"
       + "  try{"
-      + "    var range=null;"
-      + "    if(document.caretRangeFromPoint)range=document.caretRangeFromPoint(x,y);"
-      + "    else if(document.caretPositionFromPoint){"
-      + "      var cp=document.caretPositionFromPoint(x,y);"
-      + "      if(cp)range={startContainer:cp.offsetNode,startOffset:cp.offset};"
-      + "    }"
-      + "    if(!range||!range.startContainer)return 0;"
-      + "    var node=range.startContainer;"
-      + "    if(node.nodeType!==3){"
-      + "      for(var i=0;i<node.childNodes.length;i++){"
-      + "        if(node.childNodes[i].nodeType===3){node=node.childNodes[i];break;}"
-      + "      }"
-      + "    }"
-      + "    if(node.nodeType!==3)return 0;"
-      + "    var text=node.textContent||'';"
-      + "    var off=Math.min(range.startOffset,text.length);"
-      + "    var start=Math.max(0,off-20);"
-      + "    var snippet=text.substring(start,Math.min(text.length,off+20));"
-      + "    if(!snippet)return 0;"
-      + "    var idx=current.indexOf(snippet);"
-      + "    if(idx>=0)return idx+(off-start);"
-      + "    var pre=text.substring(0,off);"
-      + "    var words=pre.split(/\\s+/);"
-      + "    var last=words[words.length-1];"
-      + "    if(last&&last.length>=3){"
-      + "      idx=current.indexOf(last);"
-      + "      if(idx>=0)return idx+last.length;"
-      + "    }"
-      + "    return 0;"
-      + "  }catch(e){return 0;}"
+      + "    var doc=document.documentElement;"
+      + "    var total=doc.scrollHeight;"
+      + "    var vp=window.innerHeight;"
+      + "    var max=total-vp;"
+      + "    var trackH=sbTrack.clientHeight;"
+      + "    if(max<=0||trackH<=0){sbTrack.style.display='none';return;}"
+      + "    sbTrack.style.display='block';"
+      + "    var thumbH=Math.max(24,trackH*vp/total);"
+      + "    var thumbTop=(window.scrollY/max)*(trackH-thumbH);"
+      + "    sbThumb.style.height=thumbH+'px';"
+      + "    sbThumb.style.top=thumbTop+'px';"
+      + "  }catch(e){}"
+      + "}"
+      + "function scrollFromTrackY(cy){"
+      + "  if(!sbTrack)return;"
+      + "  try{"
+      + "    var r=sbTrack.getBoundingClientRect();"
+      + "    var rel=Math.max(0,Math.min(1,(cy-r.top)/r.height));"
+      + "    var max=document.documentElement.scrollHeight-window.innerHeight;"
+      + "    window.scrollTo(0,max*rel);"
+      + "  }catch(e){}"
+      + "}"
+      + "if(sbTrack){"
+      + "  var dragging=false;"
+      + "  sbTrack.addEventListener('touchstart',function(e){"
+      + "    dragging=true;scrollFromTrackY(e.touches[0].clientY);"
+      + "    e.preventDefault();"
+      + "  },{passive:false});"
+      + "  sbTrack.addEventListener('touchmove',function(e){"
+      + "    if(!dragging)return;"
+      + "    scrollFromTrackY(e.touches[0].clientY);"
+      + "    e.preventDefault();"
+      + "  },{passive:false});"
+      + "  sbTrack.addEventListener('touchend',function(e){"
+      + "    dragging=false;e.preventDefault();"
+      + "  },{passive:false});"
+      + "  window.addEventListener('scroll',updateScrollbar,{passive:true});"
+      + "  window.addEventListener('resize',updateScrollbar);"
+      + "  setTimeout(updateScrollbar,50);"
+      + "  setTimeout(updateScrollbar,200);"
+      + "  setTimeout(updateScrollbar,500);"
       + "}"
 
-      + "function enterEditAt(x,y){"
+      // Enter edit at current scroll position
+      + "function enterEdit(){"
       + "  if(editing)return;"
       + "  editStartScrollY=window.scrollY||window.pageYOffset||0;"
-      + "  var pos=sourcePosFromPoint(x,y);"
+      + "  var oldDocH=document.documentElement.scrollHeight;"
+      + "  var oldVpH=window.innerHeight;"
+      + "  var ratio=oldDocH>oldVpH?(editStartScrollY/(oldDocH-oldVpH)):0;"
       + "  editing=true;"
       + "  editor.value=current;"
       + "  view.style.display='none';"
       + "  editor.style.display='block';"
-      + "  doneBtn.style.display='block';"
+      + "  editBtn.style.display='none';"
+      + "  doneBtn.style.display='flex';"
+      + "  if(sbTrack)sbTrack.style.display='none';"
       + "  try{document.body.style.setProperty('padding-top','0','important');}catch(e){}"
       + "  fitEditor();"
       + "  setTimeout(function(){"
       + "    try{"
       + "      editor.focus();"
-      + "      if(pos>=0&&pos<=editor.value.length){"
-      + "        editor.setSelectionRange(pos,pos);"
-      + "        var lineNum=(editor.value.substring(0,pos).match(/\\n/g)||[]).length;"
-      + "        editor.scrollTop=Math.max(0,(lineNum-4)*22);"
-      + "      }else{"
-      + "        editor.setSelectionRange(0,0);"
-      + "        editor.scrollTop=0;"
-      + "      }"
+      + "      var eMax=Math.max(0,editor.scrollHeight-editor.clientHeight);"
+      + "      editor.scrollTop=Math.max(0,Math.min(eMax,ratio*eMax));"
       + "    }catch(e){}"
       + "  },60);"
       + "}"
 
       + "function exitEdit(save){"
-      + "  if(!editing)return;editing=false;"
+      + "  if(!editing)return;"
+      + "  editing=false;"
       + "  var v=editor.value;"
       + "  editor.style.display='none';"
       + "  view.style.display='';"
+      + "  editBtn.style.display='flex';"
       + "  doneBtn.style.display='none';"
       + "  try{document.body.style.removeProperty('padding-top');}catch(e){}"
-
       + "  if(save&&v!==current){"
       + "    current=v;"
       + "    try{__HashiruNative.saveAndReload(v,editStartScrollY);}catch(e){}"
       + "  }else{"
-      + "    function restore(){"
-      + "      try{window.scrollTo(0,editStartScrollY);}catch(e){}"
-      + "    }"
-      + "    requestAnimationFrame(function(){"
-      + "      requestAnimationFrame(restore);"
-      + "    });"
+      + "    function restore(){try{window.scrollTo(0,editStartScrollY);}catch(e){}}"
+      + "    requestAnimationFrame(function(){requestAnimationFrame(restore);});"
       + "    setTimeout(restore,60);"
       + "    setTimeout(restore,200);"
+      + "    setTimeout(updateScrollbar,300);"
       + "  }"
       + "}"
 
-      + "view.addEventListener('touchend',function(e){"
-      + "  if(e.changedTouches.length!==1)return;"
-      + "  var t=e.changedTouches[0];"
-      + "  var now=Date.now();"
-      + "  tapTimes.push(now);"
-      + "  while(tapTimes.length&&now-tapTimes[0]>500)tapTimes.shift();"
-      + "  if(tapTimes.length>=3){"
-      + "    tapTimes=[];"
-      + "    e.preventDefault();e.stopPropagation();"
-      + "    try{window.getSelection().removeAllRanges();}catch(x){}"
-      + "    enterEditAt(t.clientX,t.clientY);"
-      + "  }"
-      + "},{passive:false});"
-
-      + "doneBtn.addEventListener('click',function(){exitEdit(true);});"
+      + "editBtn.addEventListener('click',function(e){e.preventDefault();enterEdit();});"
+      + "doneBtn.addEventListener('click',function(e){e.preventDefault();exitEdit(true);});"
       + "})();";
 }

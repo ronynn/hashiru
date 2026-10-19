@@ -44,7 +44,10 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.ref.WeakReference;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class WebViewActivity extends Activity {
 
@@ -63,6 +66,12 @@ public class WebViewActivity extends Activity {
 
     private static final int MAX_READER_BYTES = 5 * 1024 * 1024;
 
+    // Global map of open documents → activity. Used to avoid duplicate tasks
+    // when the same file is reopened via the file manager (external ACTION_VIEW
+    // doesn't reuse tasks automatically).
+    private static final Map<String, WeakReference<WebViewActivity>> OPEN_DOCS
+            = new ConcurrentHashMap<>();
+
     private LocalFileServer server;
     private WebView web;
     private SharedPreferences posPrefs;
@@ -70,9 +79,6 @@ public class WebViewActivity extends Activity {
     private boolean restorePending = true;
     private int pendingRestoreY = -1;
 
-    // Set before any reloadCurrentFile(); consumed in onPageFinished. Prevents
-    // the WebView back button from returning to the pre-edit render that still
-    // lives in its back-forward cache.
     private boolean clearHistoryOnNextFinish = false;
 
     private ValueCallback<Uri[]> fileChooserCallback;
@@ -81,6 +87,7 @@ public class WebViewActivity extends Activity {
     private int statusBarHeight = 0;
     private ReaderSettings settings;
 
+    private String ident;
     private Uri currentDirectUri;
     private Uri currentTreeUri;
     private String currentRelPath;
@@ -111,19 +118,43 @@ public class WebViewActivity extends Activity {
         settings = ReaderSettings.load(this);
         statusBarHeight = getStatusBarHeight();
 
-        // Decide reader-vs-HTML before painting any background.
         String treeUriStr = getIntent().getStringExtra(EXTRA_TREE_URI);
         String relPath = getIntent().getStringExtra(EXTRA_REL_PATH);
         Uri directUri = null;
-
-        if (treeUriStr != null && relPath != null) {
-            currentExt = extOf(relPath);
-        } else if (Intent.ACTION_VIEW.equals(getIntent().getAction())
+        if (!(treeUriStr != null && relPath != null)
+                && Intent.ACTION_VIEW.equals(getIntent().getAction())
                 && getIntent().getData() != null) {
             directUri = getIntent().getData();
+        }
+
+        // Determine identity BEFORE opening anything
+        if (treeUriStr != null && relPath != null) {
+            ident = "tree|" + treeUriStr + "|" + relPath;
+            currentExt = extOf(relPath);
+        } else if (directUri != null) {
+            ident = "uri|" + directUri.toString();
             currentExt = extOf(queryDisplayName(directUri));
+        } else {
+            finish();
+            return;
         }
         isReader = isReaderExt(currentExt);
+
+        // Dedup: bring existing task forward instead of creating another window
+        WebViewActivity existing = findExisting(ident);
+        if (existing != null && existing != this && !existing.isFinishing()) {
+            try {
+                ActivityManager am = (ActivityManager)
+                        getSystemService(Context.ACTIVITY_SERVICE);
+                am.moveTaskToFront(existing.getTaskId(), 0);
+                finish();
+                return;
+            } catch (Exception e) {
+                Log.w(TAG, "moveTaskToFront failed", e);
+                // fall through → open normally
+            }
+        }
+        registerOpen(ident, this);
 
         final int bg = isReader
                 ? ReaderRenderer.backgroundArgb(settings.theme)
@@ -193,8 +224,6 @@ public class WebViewActivity extends Activity {
                     if (y > 0) scrollAfterLoad(v, y);
                 }
 
-                // Reader reloads add a history entry; wiping it means back
-                // exits to MainActivity rather than showing stale content.
                 if (clearHistoryOnNextFinish) {
                     clearHistoryOnNextFinish = false;
                     try { v.clearHistory(); } catch (Exception ignored) {}
@@ -228,11 +257,30 @@ public class WebViewActivity extends Activity {
 
         if (treeUriStr != null && relPath != null) {
             openFromTree(treeUriStr, relPath);
-        } else if (directUri != null) {
-            openDirectFile(directUri);
         } else {
-            finish();
+            openDirectFile(directUri);
         }
+    }
+
+    // ==================================================================
+    //  Dedup registry
+    // ==================================================================
+
+    private static WebViewActivity findExisting(String ident) {
+        if (ident == null) return null;
+        WeakReference<WebViewActivity> ref = OPEN_DOCS.get(ident);
+        return ref == null ? null : ref.get();
+    }
+
+    private static void registerOpen(String ident, WebViewActivity act) {
+        if (ident == null) return;
+        OPEN_DOCS.put(ident, new WeakReference<>(act));
+    }
+
+    private static void unregisterOpen(String ident, WebViewActivity act) {
+        if (ident == null) return;
+        WeakReference<WebViewActivity> ref = OPEN_DOCS.get(ident);
+        if (ref != null && ref.get() == act) OPEN_DOCS.remove(ident);
     }
 
     // ==================================================================
@@ -294,10 +342,14 @@ public class WebViewActivity extends Activity {
                 + "&blur=" + (settings.blurEnabled ? "1" : "0");
     }
 
+    /**
+     * Always returns status-bar height in CSS px (0 only for non-reader HTML).
+     * Keeping this stable across orientations means no reload is needed when
+     * rotating — the baked-in padding stays valid in both orientations. In
+     * landscape fullscreen it's just a small top margin.
+     */
     private int currentSbhDp() {
         if (!isReader) return 0;
-        if (getResources().getConfiguration().orientation
-                != Configuration.ORIENTATION_PORTRAIT) return 0;
         if (statusBarHeight <= 0) return 0;
         float density = getResources().getDisplayMetrics().density;
         return Math.round(statusBarHeight / density);
@@ -306,7 +358,10 @@ public class WebViewActivity extends Activity {
     private void scrollAfterLoad(WebView v, int y) {
         if (y <= 0) return;
         final String js = "(function(){var y=" + y + ";"
-                + "function s(){try{window.scrollTo(0,y);}catch(e){}}"
+                + "function s(){try{"
+                + "  var max=Math.max(0,document.documentElement.scrollHeight-window.innerHeight);"
+                + "  window.scrollTo(0,Math.min(y,max));"
+                + "}catch(e){}}"
                 + "requestAnimationFrame(function(){requestAnimationFrame(s);});"
                 + "setTimeout(s,80);"
                 + "setTimeout(s,250);"
@@ -353,16 +408,13 @@ public class WebViewActivity extends Activity {
     @Override
     public void onConfigurationChanged(Configuration cfg) {
         super.onConfigurationChanged(cfg);
+        // Just reapply system UI — no reload, so scroll position stays put.
         applyOrientation(cfg.orientation);
-        if (isReader && web != null) {
-            if (pendingRestoreY < 0) pendingRestoreY = web.getScrollY();
-            reloadCurrentFile();
-        }
     }
 
     private void reloadCurrentFile() {
         if (web == null) return;
-        clearHistoryOnNextFinish = true;   // only called from reader context
+        if (isReader) clearHistoryOnNextFinish = true;
         if (server != null && currentRelPath != null) {
             web.loadUrl(buildServerUrl());
         } else if (currentDirectUri != null) {
@@ -912,7 +964,8 @@ public class WebViewActivity extends Activity {
         View decor = win.getDecorView();
         WindowManager.LayoutParams lp = win.getAttributes();
 
-        if (isReader && orientation == Configuration.ORIENTATION_LANDSCAPE) {
+        // Landscape → fullscreen immersive for BOTH reader and HTML apps.
+        if (orientation == Configuration.ORIENTATION_LANDSCAPE) {
             decor.setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                             | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
@@ -969,6 +1022,7 @@ public class WebViewActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        unregisterOpen(ident, this);
         if (fileChooserCallback != null) {
             fileChooserCallback.onReceiveValue(null);
             fileChooserCallback = null;
