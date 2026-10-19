@@ -1,13 +1,19 @@
 package io.github.ronynn.hashiru;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.DocumentsContract;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.View;
 import android.widget.Button;
+import android.widget.ImageButton;
 import android.widget.ListView;
+import android.widget.PopupMenu;
 import android.widget.TextView;
 
 import java.util.ArrayList;
@@ -36,6 +42,7 @@ public class MainActivity extends Activity {
         list = findViewById(R.id.list);
         pathView = findViewById(R.id.path);
         Button pick = findViewById(R.id.pick);
+        ImageButton menu = findViewById(R.id.menu);
 
         adapter = new FileListAdapter(this);
         list.setAdapter(adapter);
@@ -43,12 +50,13 @@ public class MainActivity extends Activity {
 
         pick.setOnClickListener(v -> {
             Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
-            // FIX: request read + write + persistable so mini-apps can save back.
             i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
                     | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                     | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
             startActivityForResult(i, REQ_PICK);
         });
+
+        menu.setOnClickListener(this::showSettingsMenu);
 
         list.setOnItemClickListener((p, v, pos, id) -> {
             SafDoc d = adapter.getItem(pos);
@@ -67,15 +75,104 @@ public class MainActivity extends Activity {
         }
     }
 
+    // ------------------------------------------------------------ menu
+
+    private void showSettingsMenu(View anchor) {
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        PopupMenu pm = new PopupMenu(this, anchor);
+        Menu m = pm.getMenu();
+        m.add(0, 1, 0, "Theme…");
+        m.add(0, 2, 1, "Font…");
+        m.add(0, 3, 2, "Font size…");
+        MenuItem txt = m.add(0, 4, 3, "Read .txt as Markdown");
+        txt.setCheckable(true);
+        txt.setChecked(prefs.getBoolean(ReaderSettings.KEY_READ_TXT_AS_MD, false));
+        MenuItem eruda = m.add(0, 5, 4, "Enable Eruda console");
+        eruda.setCheckable(true);
+        eruda.setChecked(prefs.getBoolean(ReaderSettings.KEY_ERUDA, false));
+
+        pm.setOnMenuItemClickListener(item -> {
+            switch (item.getItemId()) {
+                case 1: showThemeDialog(); return true;
+                case 2: showFontDialog();  return true;
+                case 3: showSizeDialog();  return true;
+                case 4: {
+                    boolean v = !item.isChecked();
+                    prefs.edit().putBoolean(ReaderSettings.KEY_READ_TXT_AS_MD, v).apply();
+                    item.setChecked(v);
+                    return true;
+                }
+                case 5: {
+                    boolean v = !item.isChecked();
+                    prefs.edit().putBoolean(ReaderSettings.KEY_ERUDA, v).apply();
+                    item.setChecked(v);
+                    return true;
+                }
+            }
+            return false;
+        });
+        pm.show();
+    }
+
+    private void showThemeDialog() {
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        int idx = indexOf(ReaderSettings.THEME_VALUES,
+                prefs.getString(ReaderSettings.KEY_THEME, "dark"));
+        new AlertDialog.Builder(this)
+                .setTitle("Theme")
+                .setSingleChoiceItems(ReaderSettings.THEME_LABELS, idx, (d, w) -> {
+                    prefs.edit().putString(ReaderSettings.KEY_THEME,
+                            ReaderSettings.THEME_VALUES[w]).apply();
+                    d.dismiss();
+                })
+                .show();
+    }
+
+    private void showFontDialog() {
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        int idx = indexOf(ReaderSettings.FONT_VALUES,
+                prefs.getString(ReaderSettings.KEY_FONT, "sans"));
+        new AlertDialog.Builder(this)
+                .setTitle("Font")
+                .setSingleChoiceItems(ReaderSettings.FONT_LABELS, idx, (d, w) -> {
+                    prefs.edit().putString(ReaderSettings.KEY_FONT,
+                            ReaderSettings.FONT_VALUES[w]).apply();
+                    d.dismiss();
+                })
+                .show();
+    }
+
+    private void showSizeDialog() {
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        int cur = prefs.getInt(ReaderSettings.KEY_SIZE, 17);
+        int idx = 2;
+        for (int i = 0; i < ReaderSettings.SIZE_VALUES.length; i++)
+            if (ReaderSettings.SIZE_VALUES[i] == cur) idx = i;
+        new AlertDialog.Builder(this)
+                .setTitle("Font size")
+                .setSingleChoiceItems(ReaderSettings.SIZE_LABELS, idx, (d, w) -> {
+                    prefs.edit().putInt(ReaderSettings.KEY_SIZE,
+                            ReaderSettings.SIZE_VALUES[w]).apply();
+                    d.dismiss();
+                })
+                .show();
+    }
+
+    private static int indexOf(String[] arr, String v) {
+        if (v == null) return 0;
+        for (int i = 0; i < arr.length; i++) if (v.equals(arr[i])) return i;
+        return 0;
+    }
+
+    // ------------------------------------------------------------ SAF
+
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
         if (req == REQ_PICK && res == RESULT_OK && data != null && data.getData() != null) {
             Uri u = data.getData();
             try {
-                // FIX: take read + write.
-                getContentResolver().takePersistableUriPermission(
-                        u,
+                getContentResolver().takePersistableUriPermission(u,
                         Intent.FLAG_GRANT_READ_URI_PERMISSION
                                 | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
             } catch (SecurityException ignored) {}
@@ -135,11 +232,8 @@ public class MainActivity extends Activity {
 
     private void openInWebView(SafDoc d) {
         String rel;
-        if (folderPath.isEmpty()) {
-            rel = d.name;
-        } else {
-            rel = String.join("/", folderPath) + "/" + d.name;
-        }
+        if (folderPath.isEmpty()) rel = d.name;
+        else rel = String.join("/", folderPath) + "/" + d.name;
         Intent i = new Intent(this, WebViewActivity.class);
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
         i.putExtra(WebViewActivity.EXTRA_TREE_URI, treeUri.toString());

@@ -3,6 +3,7 @@
 hashiru (走る) is a minimal Android viewer for local HTML applications and plain-text md documentation, for quickly building and setting up custom apps for personal use, inspired by Termux-GUI and APDE
 . Renders any HTML file from user-selected storage with its sibling JS, CSS, fonts, and images intact, using a local HTTP server bound to 127.0.0.1.17463
 
+New: Now edit your text and markdown files seemlessly too, and customize its looks.
 
 <div align="center">
   <img src="fastlane/metadata/android/en-US/images/icon.png" alt="App Icon" width="45%">
