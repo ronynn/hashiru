@@ -50,6 +50,10 @@ public class LocalFileServer extends NanoHTTPD {
 
     public String origin() { return "http://127.0.0.1:" + PORT; }
 
+    // ==================================================================
+    //  Request entry point
+    // ==================================================================
+
     @Override
     public Response serve(IHTTPSession session) {
         if (treeUri == null || resolver == null)
@@ -58,19 +62,34 @@ public class LocalFileServer extends NanoHTTPD {
         String uri = session.getUri();
         if (uri.startsWith("/")) uri = uri.substring(1);
 
+        // Reject path traversal per-segment (allows "notes..txt" filenames).
         for (String seg : uri.split("/"))
             if ("..".equals(seg)) return plain(Response.Status.FORBIDDEN, "Forbidden");
 
+        // Reader-only query params.
+        int sbhDp = 0;
+        boolean blur = true;
         try {
-            if (uri.isEmpty()) return serveDirOrIndex(rootDocId, "/", session);
+            Map<String, String> parms = session.getParms();
+            String sbh = parms.get("sbh");
+            if (sbh != null) sbhDp = Integer.parseInt(sbh);
+            String b = parms.get("blur");
+            if (b != null) blur = "1".equals(b);
+        } catch (Exception ignored) {}
+
+        try {
+            if (uri.isEmpty())
+                return serveDirOrIndex(rootDocId, "/", sbhDp, blur, session);
+
             String cur = rootDocId;
             for (String part : uri.split("/")) {
                 if (part.isEmpty()) continue;
                 String next = findChild(cur, part);
-                if (next == null) return plain(Response.Status.NOT_FOUND, "Not found: " + uri);
+                if (next == null)
+                    return plain(Response.Status.NOT_FOUND, "Not found: " + uri);
                 cur = next;
             }
-            return serveDoc(cur, uri, session);
+            return serveDoc(cur, uri, sbhDp, blur, session);
         } catch (Exception e) {
             Log.w(TAG, "serve failed for " + uri, e);
             return plain(Response.Status.INTERNAL_ERROR,
@@ -78,25 +97,38 @@ public class LocalFileServer extends NanoHTTPD {
         }
     }
 
-    private Response serveDirOrIndex(String dirDocId, String pathForError, IHTTPSession session) {
+    // ==================================================================
+    //  Directory / file dispatch
+    // ==================================================================
+
+    private Response serveDirOrIndex(String dirDocId, String pathForError,
+                                     int sbhDp, boolean blur, IHTTPSession session) {
         String id = findChild(dirDocId, "index.html");
-        if (id != null) return serveDoc(id, pathForError, session);
+        if (id != null) return serveDoc(id, pathForError, sbhDp, blur, session);
         return plain(Response.Status.NOT_FOUND, "No index.html at " + pathForError);
     }
 
     private String findChild(String parentDocId, String name) {
         Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId);
-        String[] proj = { DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                          DocumentsContract.Document.COLUMN_DISPLAY_NAME };
+        String[] proj = {
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME
+        };
         Cursor c = resolver.query(children, proj, null, null, null);
         if (c == null) return null;
-        try { while (c.moveToNext()) if (name.equals(c.getString(1))) return c.getString(0); }
-        finally { c.close(); }
+        try {
+            while (c.moveToNext())
+                if (name.equals(c.getString(1))) return c.getString(0);
+        } finally {
+            c.close();
+        }
         return null;
     }
 
-    private Response serveDoc(String docId, String pathForError, IHTTPSession session) {
+    private Response serveDoc(String docId, String pathForError,
+                              int sbhDp, boolean blur, IHTTPSession session) {
         Uri docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId);
+
         String mime = null, name = null;
         long lastModified = 0;
         String[] proj = {
@@ -112,15 +144,17 @@ public class LocalFileServer extends NanoHTTPD {
                     name = c.getString(1);
                     try { lastModified = c.getLong(2); } catch (Exception ignored) {}
                 }
-            } finally { c.close(); }
+            } finally {
+                c.close();
+            }
         }
 
         if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime))
-            return serveDirOrIndex(docId, pathForError, session);
+            return serveDirOrIndex(docId, pathForError, sbhDp, blur, session);
 
         String ext = extensionOf(name);
 
-        // Readers: rendered HTML on the fly, always no-store
+        // ---- Reader path: rendered HTML on the fly, always no-store ----
         if (READER_EXTS.contains(ext)) {
             try {
                 InputStream in = resolver.openInputStream(docUri);
@@ -128,7 +162,7 @@ public class LocalFileServer extends NanoHTTPD {
                 String raw = readAll(in);
                 ReaderSettings settings = appContext != null
                         ? ReaderSettings.load(appContext) : new ReaderSettings();
-                String html = ReaderRenderer.render(ext, raw, settings);
+                String html = ReaderRenderer.render(ext, raw, settings, sbhDp, blur);
                 Response r = newFixedLengthResponse(
                         Response.Status.OK, "text/html; charset=utf-8", html);
                 r.addHeader("Cache-Control", "no-store");
@@ -138,9 +172,10 @@ public class LocalFileServer extends NanoHTTPD {
             }
         }
 
-        // Non-readers: ETag-based revalidating cache
+        // ---- Non-reader path: ETag-based revalidating cache ----
         String etag = "\"" + docId + "-" + lastModified + "\"";
         boolean hasValidator = lastModified > 0;
+
         if (hasValidator) {
             String inm = headerIgnoreCase(session, "if-none-match");
             if (inm != null && (inm.equals(etag) || inm.equals("*"))) {
@@ -151,8 +186,11 @@ public class LocalFileServer extends NanoHTTPD {
             }
         }
 
-        if (ext.equals("html") || ext.equals("htm")) mime = "text/html; charset=utf-8";
-        else if (mime == null || "application/octet-stream".equals(mime)) mime = guessMime(name);
+        // Force text/html for .html/.htm even if SAF misreports.
+        if (ext.equals("html") || ext.equals("htm"))
+            mime = "text/html; charset=utf-8";
+        else if (mime == null || "application/octet-stream".equals(mime))
+            mime = guessMime(name);
 
         try {
             InputStream in = resolver.openInputStream(docUri);
@@ -162,7 +200,7 @@ public class LocalFileServer extends NanoHTTPD {
                 r.addHeader("ETag", etag);
                 r.addHeader("Cache-Control", "no-cache");
             } else {
-                // Some providers don't expose lastModified → cache but revalidate always
+                // Provider doesn't expose lastModified → can't revalidate safely.
                 r.addHeader("Cache-Control", "no-store");
             }
             return r;
@@ -171,8 +209,15 @@ public class LocalFileServer extends NanoHTTPD {
         }
     }
 
+    // ==================================================================
+    //  Helpers
+    // ==================================================================
+
     private static String headerIgnoreCase(IHTTPSession session, String name) {
-        for (Map.Entry<String, String> e : session.getHeaders().entrySet())
+        if (session == null) return null;
+        Map<String, String> headers = session.getHeaders();
+        if (headers == null) return null;
+        for (Map.Entry<String, String> e : headers.entrySet())
             if (e.getKey().equalsIgnoreCase(name)) return e.getValue();
         return null;
     }

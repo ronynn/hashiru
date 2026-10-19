@@ -19,7 +19,14 @@ public class ReaderRenderer {
     private static final Parser PARSER = Parser.builder().extensions(EXTENSIONS).build();
     private static final HtmlRenderer RENDERER = HtmlRenderer.builder().extensions(EXTENSIONS).build();
 
-    public static String render(String ext, String raw, ReaderSettings settings) {
+    /**
+     * @param sbhDp      status-bar height in CSS px; content is padded below the
+     *                   status bar by this much. 0 = landscape (no pad needed).
+     * @param blurEnabled if true, a blurred overlay is drawn over the status-bar strip.
+     */
+    public static String render(String ext, String raw,
+                                ReaderSettings settings,
+                                int sbhDp, boolean blurEnabled) {
         boolean isMd = ext.equals("md") || ext.equals("markdown") || ext.equals("txt");
 
         String body;
@@ -30,16 +37,27 @@ public class ReaderRenderer {
         } else {
             body = "<pre class=\"plain\">" + escapeHtml(raw) + "</pre>";
         }
-        return wrap(body, raw, settings);
+        return wrap(body, raw, settings, sbhDp, blurEnabled);
+    }
+
+    public static int backgroundArgb(String theme) {
+        switch (theme) {
+            case "nord":    return 0xFF2e3440;
+            case "gruvbox": return 0xFF282828;
+            case "things":  return 0xFFfafafa;
+            case "paper":   return 0xFFf5f1e8;
+            default:        return 0xFF282a36;   // dracula
+        }
     }
 
     private static String escapeHtml(String s) {
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
-    private static String wrap(String body, String rawSource, ReaderSettings s) {
+    private static String wrap(String body, String rawSource, ReaderSettings s,
+                               int sbhDp, boolean blurEnabled) {
         Palette p = paletteFor(s.theme);
-        String css = themeCss(s, p);
+        String css = themeCss(s, p, sbhDp, blurEnabled);
         String sourceJson = jsonEscape(rawSource);
 
         return "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
@@ -47,7 +65,8 @@ public class ReaderRenderer {
              + "<style>" + css + "</style></head><body>"
              + "<div id=\"hashiru-view\">" + body + "</div>"
              + "<textarea id=\"hashiru-editor\" spellcheck=\"false\" autocorrect=\"off\" autocomplete=\"off\"></textarea>"
-             + "<button id=\"hashiru-done\" type=\"button\">Done ✓</button>"
+             + "<button id=\"hashiru-done\" type=\"button\">✓</button>"
+             + "<div id=\"hashiru-statusblur\"></div>"
              + "<script id=\"hashiru-source\" type=\"application/json\">" + sourceJson + "</script>"
              + "<script>" + EDIT_SCRIPT + "</script>"
              + "</body></html>";
@@ -77,33 +96,58 @@ public class ReaderRenderer {
     }
 
     private static String fontCss(ReaderSettings s) {
-        String family;
-        String weight = "400";
-        String stretch = "normal";
         switch (s.font) {
-            case "sans-light":     family = "sans-serif"; weight = "300"; break;
-            case "sans-thin":      family = "sans-serif"; weight = "100"; break;
-            case "sans-medium":    family = "sans-serif"; weight = "500"; break;
-            case "sans-black":     family = "sans-serif"; weight = "900"; break;
-            case "sans-condensed": family = "sans-serif"; stretch = "75%"; break;
-            case "serif":          family = "serif"; break;
-            case "mono":           family = "monospace"; break;
-            case "cursive":        family = "casual,cursive"; break;
-            default:               family = "sans-serif"; break;
+            case "sans-light":     return "font-family:sans-serif;font-weight:300;";
+            case "sans-condensed": return "font-family:sans-serif;font-stretch:75%;";
+            case "serif":          return "font-family:serif;";
+            case "mono":           return "font-family:monospace;";
+            default:               return "font-family:sans-serif;";
         }
-        return "font-family:" + family + ";"
-             + "font-weight:" + weight + ";"
-             + "font-stretch:" + stretch + ";";
     }
 
-    private static String themeCss(ReaderSettings s, Palette p) {
+    private static String themeCss(ReaderSettings s, Palette p, int sbhDp, boolean blurEnabled) {
         int size = s.fontSize;
 
+        // Content padding: always status-bar height + small aesthetic gap in
+        // portrait; 8px when landscape (immersive, no status bar).
+        int topPad = sbhDp > 0 ? sbhDp + 4 : 8;
+        int btnTop = sbhDp > 0 ? sbhDp + 12 : 12;
+        int editorTop = sbhDp > 0 ? sbhDp + 68 : 68;
+
+        boolean showBlur = blurEnabled && sbhDp > 0;
+        int blurH = showBlur ? sbhDp + 6 : 0;
+
+        String blurGradient = s.isLightTheme()
+            ? "linear-gradient(to bottom,"
+              + "rgba(255,255,255,0.45) 0%,"
+              + "rgba(255,255,255,0.18) 50%,"
+              + "rgba(255,255,255,0) 100%)"
+            : "linear-gradient(to bottom,"
+              + "rgba(0,0,0,0.14) 0%,"
+              + "rgba(0,0,0,0.06) 50%,"
+              + "rgba(0,0,0,0) 100%)";
+
+        String blurRule = showBlur
+            ? "#hashiru-statusblur{position:fixed;top:0;left:0;right:0;"
+              + "height:" + blurH + "px;"
+              + "-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);"
+              + "background:" + blurGradient + ";"
+              + "-webkit-mask-image:linear-gradient(to bottom,"
+              +   "black 0%,black 40%,transparent 100%);"
+              + "mask-image:linear-gradient(to bottom,"
+              +   "black 0%,black 40%,transparent 100%);"
+              + "z-index:9700;pointer-events:none;}"
+            : "#hashiru-statusblur{display:none;}";
+
         return "html{background:" + p.bg + ";color:" + p.text + ";overflow-x:hidden;}"
-            + "body{max-width:48em;margin:0 auto;padding:.8em 1em 4em;"
-            +   fontCss(s) + "font-size:" + size + "px;line-height:1.5;"
+            + "body{max-width:48em;margin:0 auto;"
+            +   "padding:" + topPad + "px 1em 4em;"
+            +   fontCss(s) + "font-size:" + size + "px;line-height:1.55;"
             +   "-webkit-text-size-adjust:100%;-webkit-tap-highlight-color:transparent;"
             +   "overflow-wrap:break-word;touch-action:manipulation;}"
+            + "::selection{background:" + p.selectionBg + ";color:" + p.selectionFg + ";}"
+
+            // Headings — different colour per level for visual hierarchy
             + "h1,h2,h3,h4,h5,h6{line-height:1.3;margin:1em 0 .4em;font-weight:600;}"
             + "h1{color:" + p.h1 + ";font-size:1.9em;border-bottom:1px solid " + p.border + ";padding-bottom:.3em;}"
             + "h2{color:" + p.h2 + ";font-size:1.5em;border-bottom:1px solid " + p.border + ";padding-bottom:.25em;}"
@@ -111,142 +155,195 @@ public class ReaderRenderer {
             + "h4{color:" + p.h4 + ";font-size:1.1em;}"
             + "h5{color:" + p.h5 + ";font-size:1em;}"
             + "h6{color:" + p.h6 + ";font-size:1em;}"
-            + "a{color:" + p.link + ";text-decoration:none;}a:hover{text-decoration:underline;}"
+
+            // Links
+            + "a{color:" + p.link + ";text-decoration:none;}"
+            + "a:hover{text-decoration:underline;}"
+            + "a:visited{color:" + p.link + ";}"
+            + "a:active{color:" + p.link + ";}"
+            + "a:focus{outline:2px solid " + p.link + ";outline-offset:2px;border-radius:2px;}"
+
+            // Inline text
+            + "strong,b{color:" + p.strong + ";font-weight:600;}"
+            + "em,i{color:" + p.em + ";}"
+            + "del,s{color:" + p.del + ";text-decoration:line-through;}"
+            + "mark{background:" + p.markBg + ";color:" + p.markFg + ";padding:0 .3em;border-radius:3px;}"
+            + "small{opacity:.85;}"
+            + "sup,sub{font-size:.8em;line-height:0;}"
+
+            // Inline code + keyboard
             + "code{background:" + p.codeBg + ";color:" + p.codeFg + ";padding:.15em .4em;border-radius:4px;"
             +   "font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.92em;}"
+            + "kbd{background:" + p.kbdBg + ";color:" + p.kbdFg + ";padding:.1em .4em;border-radius:4px;"
+            +   "font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.88em;"
+            +   "border:1px solid " + p.border + ";}"
+
+            // Code blocks
             + "pre{background:" + p.preBg + ";padding:1em;border-radius:8px;overflow:auto;"
             +   "font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.9em;line-height:1.5;"
             +   "border:1px solid " + p.preBorder + ";}"
             + "pre.plain{white-space:pre-wrap;word-wrap:break-word;}"
             + "pre code{background:none;padding:0;color:inherit;}"
+
+            // Blockquotes
             + "blockquote{border-left:3px solid " + p.blockquoteBorder + ";padding:.2em 1em;"
-            +   "color:" + p.blockquoteFg + ";margin-left:0;background:rgba(128,128,128,0.06);}"
-            + "ul,ol{padding-left:1.5em;}li{margin:.15em 0;}"
+            +   "color:" + p.blockquoteFg + ";margin:.6em 0;background:" + p.blockquoteBg + ";}"
+            + "blockquote p:first-child{margin-top:0;}"
+            + "blockquote p:last-child{margin-bottom:0;}"
+
+            // Lists + marker colour
+            + "ul,ol{padding-left:1.5em;}"
+            + "li{margin:.15em 0;}"
+            + "ul li::marker{color:" + p.listMarker + ";}"
+            + "ol li::marker{color:" + p.listMarker + ";font-weight:600;}"
+
+            // Tables
             + ".table-wrap{overflow-x:auto;max-width:100%;margin:0 0 1em;-webkit-overflow-scrolling:touch;}"
             + "table{border-collapse:collapse;min-width:100%;}"
             + "th,td{border:1px solid " + p.tableBorder + ";padding:.5em .8em;text-align:left;}"
+            + "td{color:" + p.text + ";}"
             + "th{background:" + p.thBg + ";color:" + p.thFg + ";font-weight:600;}"
-            + "hr{border:none;border-top:1px solid " + p.border + ";margin:1.5em 0;}"
+
+            // Structure
+            + "hr{border:none;border-top:1px solid " + p.hr + ";margin:1.5em 0;}"
             + "img{max-width:100%;height:auto;border-radius:6px;}"
-            + "strong{color:" + p.strong + ";font-weight:600;}"
-            + "em{color:" + p.em + ";}"
-            + "del{color:" + p.del + ";}"
             + "p{margin:.6em 0;}"
-            // Editor — height driven by JS (visualViewport); padding-bottom gives the
-            // last line room to scroll above the keyboard.
+
+            // Editor
             + "#hashiru-editor{position:fixed;top:0;left:0;right:0;"
-            +   "width:100%;background:" + p.bg + ";color:" + p.text + ";"
+            +   "width:100%;height:100vh;height:100dvh;"
+            +   "background:" + p.bg + ";color:" + p.text + ";"
             +   "font-family:ui-monospace,Menlo,Consolas,monospace;font-size:15px;line-height:1.5;"
             +   "border:none;outline:none;box-sizing:border-box;"
-            +   "padding:20px;padding-top:60px;padding-bottom:40vh;"
+            +   "padding:20px;padding-top:" + editorTop + "px;padding-bottom:40vh;"
             +   "resize:none;display:none;overflow-y:auto;z-index:9500;}"
-            // Pill button
-            + "#hashiru-done{position:fixed;top:20px;right:16px;z-index:9600;"
-            +   "height:40px;padding:0 14px;border-radius:10px;border:none;"
+
+            // Circular Done button
+            + "#hashiru-done{position:fixed;top:" + btnTop + "px;right:16px;z-index:9600;"
+            +   "width:44px;height:44px;padding:0;"
+            +   "border-radius:50%;border:none;"
             +   "background:" + p.accent + ";color:#fff;"
-            +   "font-family:sans-serif;font-size:14px;font-weight:600;"
-            +   "box-shadow:0 2px 8px rgba(0,0,0,.35);display:none;cursor:pointer;}";
+            +   "font-family:sans-serif;font-size:22px;font-weight:700;"
+            +   "line-height:44px;text-align:center;"
+            +   "box-shadow:0 2px 8px rgba(0,0,0,.35);display:none;cursor:pointer;}"
+
+            + blurRule;
     }
 
     private static class Palette {
-        String bg, text, border;
+        String bg, text, border, hr;
         String h1, h2, h3, h4, h5, h6;
-        String link, codeBg, codeFg, preBg, preBorder;
-        String blockquoteBorder, blockquoteFg;
+        String link;
+        String codeBg, codeFg, preBg, preBorder;
+        String blockquoteBorder, blockquoteBg, blockquoteFg;
         String tableBorder, thBg, thFg;
-        String strong, em, del, accent;
+        String strong, em, del;
+        String markBg, markFg;
+        String listMarker;
+        String kbdBg, kbdFg;
+        String selectionBg, selectionFg;
+        String accent;
     }
 
     private static Palette paletteFor(String theme) {
         Palette p = new Palette();
         switch (theme) {
-            case "light":
-                p.bg="#ffffff"; p.text="#24292f"; p.border="#d0d7de";
-                p.h1="#1f2328"; p.h2="#1f2328"; p.h3="#1f2328";
-                p.h4="#1f2328"; p.h5="#1f2328"; p.h6="#1f2328";
-                p.link="#0969da";
-                p.codeBg="#f6f8fa"; p.codeFg="#24292f";
-                p.preBg="#f6f8fa"; p.preBorder="#d0d7de";
-                p.blockquoteBorder="#d0d7de"; p.blockquoteFg="#57606a";
-                p.tableBorder="#d0d7de"; p.thBg="#f6f8fa"; p.thFg="#24292f";
-                p.strong="#1f2328"; p.em="#24292f"; p.del="#8c959f";
-                p.accent="#0969da"; break;
-            case "sepia":
-                p.bg="#f5ecd9"; p.text="#4a3f35"; p.border="#d4c7a8";
-                p.h1="#a0522d"; p.h2="#8b4513"; p.h3="#6b4423";
-                p.h4="#6b4423"; p.h5="#6b4423"; p.h6="#6b4423";
-                p.link="#b8860b";
-                p.codeBg="#e8dcc0"; p.codeFg="#6b4423";
-                p.preBg="#ede4d0"; p.preBorder="#d4c7a8";
-                p.blockquoteBorder="#a0522d"; p.blockquoteFg="#8a7a6a";
-                p.tableBorder="#d4c7a8"; p.thBg="#e8dcc0"; p.thFg="#4a3f35";
-                p.strong="#a0522d"; p.em="#8b4513"; p.del="#a89880";
-                p.accent="#a0522d"; break;
-            case "solarized_dark":
-                p.bg="#002b36"; p.text="#839496"; p.border="#073642";
-                p.h1="#cb4b16"; p.h2="#268bd2"; p.h3="#859900";
-                p.h4="#2aa198"; p.h5="#b58900"; p.h6="#6c71c4";
-                p.link="#268bd2";
-                p.codeBg="#073642"; p.codeFg="#b58900";
-                p.preBg="#00252e"; p.preBorder="#073642";
-                p.blockquoteBorder="#586e75"; p.blockquoteFg="#93a1a1";
-                p.tableBorder="#073642"; p.thBg="#073642"; p.thFg="#93a1a1";
-                p.strong="#b58900"; p.em="#268bd2"; p.del="#586e75";
-                p.accent="#268bd2"; break;
-            case "gruvbox":
-                p.bg="#282828"; p.text="#ebdbb2"; p.border="#3c3836";
-                p.h1="#fabd2f"; p.h2="#b8bb26"; p.h3="#83a598";
-                p.h4="#d3869b"; p.h5="#fe8019"; p.h6="#8ec07c";
-                p.link="#83a598";
-                p.codeBg="#3c3836"; p.codeFg="#fabd2f";
-                p.preBg="#1d2021"; p.preBorder="#3c3836";
-                p.blockquoteBorder="#b8bb26"; p.blockquoteFg="#a89984";
-                p.tableBorder="#3c3836"; p.thBg="#3c3836"; p.thFg="#ebdbb2";
-                p.strong="#fe8019"; p.em="#d79921"; p.del="#928374";
-                p.accent="#b8bb26"; break;
-            case "amoled":
-                p.bg="#000000"; p.text="#e6e6e6"; p.border="#1f1f1f";
-                p.h1="#ff79c6"; p.h2="#bd93f9"; p.h3="#8be9fd";
-                p.h4="#50fa7b"; p.h5="#ffb86c"; p.h6="#f1fa8c";
-                p.link="#8be9fd";
-                p.codeBg="#1a1a1a"; p.codeFg="#f1fa8c";
-                p.preBg="#0a0a0a"; p.preBorder="#1f1f1f";
-                p.blockquoteBorder="#bd93f9"; p.blockquoteFg="#999999";
-                p.tableBorder="#1f1f1f"; p.thBg="#1a1a1a"; p.thFg="#f0f0f0";
-                p.strong="#ffb86c"; p.em="#f1fa8c"; p.del="#555555";
-                p.accent="#bd93f9"; break;
+
             case "nord":
-                p.bg="#2e3440"; p.text="#d8dee9"; p.border="#3b4252";
+                p.bg="#2e3440"; p.text="#d8dee9";
+                p.border="#3b4252"; p.hr="#4c566a";
                 p.h1="#88c0d0"; p.h2="#81a1c1"; p.h3="#5e81ac";
                 p.h4="#a3be8c"; p.h5="#ebcb8b"; p.h6="#b48ead";
                 p.link="#88c0d0";
                 p.codeBg="#3b4252"; p.codeFg="#ebcb8b";
                 p.preBg="#292e39"; p.preBorder="#3b4252";
-                p.blockquoteBorder="#5e81ac"; p.blockquoteFg="#9099a8";
+                p.blockquoteBorder="#5e81ac";
+                p.blockquoteBg="rgba(94,129,172,0.08)";
+                p.blockquoteFg="#9099a8";
                 p.tableBorder="#3b4252"; p.thBg="#3b4252"; p.thFg="#eceff4";
                 p.strong="#8fbcbb"; p.em="#d08770"; p.del="#4c566a";
+                p.markBg="#ebcb8b"; p.markFg="#2e3440";
+                p.listMarker="#88c0d0";
+                p.kbdBg="#3b4252"; p.kbdFg="#d8dee9";
+                p.selectionBg="#434c5e"; p.selectionFg="#eceff4";
                 p.accent="#88c0d0"; break;
-            case "themeforest_light":
-                p.bg="#ffffff"; p.text="#333333"; p.border="#e0e0e0";
-                p.h1="#1a1a1a"; p.h2="#2c3e50"; p.h3="#34495e";
-                p.h4="#34495e"; p.h5="#34495e"; p.h6="#34495e";
-                p.link="#27ae60";
-                p.codeBg="#f4f4f4"; p.codeFg="#c0392b";
-                p.preBg="#f8f9fa"; p.preBorder="#e0e0e0";
-                p.blockquoteBorder="#27ae60"; p.blockquoteFg="#666666";
-                p.tableBorder="#e0e0e0"; p.thBg="#f8f9fa"; p.thFg="#333333";
-                p.strong="#27ae60"; p.em="#555555"; p.del="#999999";
-                p.accent="#27ae60"; break;
-            default:
-                p.bg="#282a36"; p.text="#f8f8f2"; p.border="#44475a";
+
+            case "gruvbox":
+                p.bg="#282828"; p.text="#ebdbb2";
+                p.border="#3c3836"; p.hr="#504945";
+                p.h1="#fabd2f"; p.h2="#b8bb26"; p.h3="#83a598";
+                p.h4="#d3869b"; p.h5="#fe8019"; p.h6="#8ec07c";
+                p.link="#83a598";
+                p.codeBg="#3c3836"; p.codeFg="#fabd2f";
+                p.preBg="#1d2021"; p.preBorder="#3c3836";
+                p.blockquoteBorder="#b8bb26";
+                p.blockquoteBg="rgba(184,187,38,0.07)";
+                p.blockquoteFg="#a89984";
+                p.tableBorder="#3c3836"; p.thBg="#3c3836"; p.thFg="#ebdbb2";
+                p.strong="#fe8019"; p.em="#d79921"; p.del="#928374";
+                p.markBg="#fabd2f"; p.markFg="#282828";
+                p.listMarker="#b8bb26";
+                p.kbdBg="#3c3836"; p.kbdFg="#ebdbb2";
+                p.selectionBg="#504945"; p.selectionFg="#ebdbb2";
+                p.accent="#b8bb26"; break;
+
+            case "things":
+                // Obsidian "Things" — minimal, iOS-flavoured light theme
+                p.bg="#fafafa"; p.text="#1c1c1e";
+                p.border="#e5e5ea"; p.hr="#d1d1d6";
+                p.h1="#1c1c1e"; p.h2="#007aff"; p.h3="#5856d6";
+                p.h4="#af52de"; p.h5="#ff9500"; p.h6="#8e8e93";
+                p.link="#007aff";
+                p.codeBg="#f2f2f7"; p.codeFg="#c7254e";
+                p.preBg="#f2f2f7"; p.preBorder="#e5e5ea";
+                p.blockquoteBorder="#007aff";
+                p.blockquoteBg="rgba(0,122,255,0.06)";
+                p.blockquoteFg="#636366";
+                p.tableBorder="#e5e5ea"; p.thBg="#f2f2f7"; p.thFg="#1c1c1e";
+                p.strong="#1c1c1e"; p.em="#5856d6"; p.del="#c7c7cc";
+                p.markBg="#ffeb3b"; p.markFg="#1c1c1e";
+                p.listMarker="#007aff";
+                p.kbdBg="#e5e5ea"; p.kbdFg="#1c1c1e";
+                p.selectionBg="#b3d7ff"; p.selectionFg="#1c1c1e";
+                p.accent="#007aff"; break;
+
+            case "paper":
+                // Warm cream, book-like
+                p.bg="#f5f1e8"; p.text="#3c3c3c";
+                p.border="#d4c7b0"; p.hr="#bfb296";
+                p.h1="#5c3d1e"; p.h2="#8b4513"; p.h3="#a0522d";
+                p.h4="#b8860b"; p.h5="#d2691e"; p.h6="#8a7a5a";
+                p.link="#a0522d";
+                p.codeBg="#e8dfd0"; p.codeFg="#8b4513";
+                p.preBg="#ebe3d4"; p.preBorder="#d4c7b0";
+                p.blockquoteBorder="#a0522d";
+                p.blockquoteBg="rgba(160,82,45,0.05)";
+                p.blockquoteFg="#8a7a6a";
+                p.tableBorder="#d4c7b0"; p.thBg="#e8dfd0"; p.thFg="#3c3c3c";
+                p.strong="#8b4513"; p.em="#a0522d"; p.del="#a89880";
+                p.markBg="#ffe4b5"; p.markFg="#3c3c3c";
+                p.listMarker="#a0522d";
+                p.kbdBg="#e8dfd0"; p.kbdFg="#3c3c3c";
+                p.selectionBg="#e8d4a8"; p.selectionFg="#3c3c3c";
+                p.accent="#a0522d"; break;
+
+            default: // dracula / "dark"
+                p.bg="#282a36"; p.text="#f8f8f2";
+                p.border="#44475a"; p.hr="#6272a4";
                 p.h1="#ff79c6"; p.h2="#bd93f9"; p.h3="#8be9fd";
                 p.h4="#50fa7b"; p.h5="#ffb86c"; p.h6="#f1fa8c";
                 p.link="#8be9fd";
                 p.codeBg="#44475a"; p.codeFg="#f1fa8c";
                 p.preBg="#21222c"; p.preBorder="#44475a";
-                p.blockquoteBorder="#bd93f9"; p.blockquoteFg="#b0b0b0";
+                p.blockquoteBorder="#bd93f9";
+                p.blockquoteBg="rgba(189,147,249,0.08)";
+                p.blockquoteFg="#b0b0b0";
                 p.tableBorder="#44475a"; p.thBg="#44475a"; p.thFg="#f8f8f2";
                 p.strong="#ffb86c"; p.em="#f1fa8c"; p.del="#6272a4";
+                p.markBg="#f1fa8c"; p.markFg="#282a36";
+                p.listMarker="#bd93f9";
+                p.kbdBg="#44475a"; p.kbdFg="#f8f8f2";
+                p.selectionBg="#44475a"; p.selectionFg="#f8f8f2";
                 p.accent="#bd93f9"; break;
         }
         return p;
@@ -262,22 +359,18 @@ public class ReaderRenderer {
       + "if(!view||!editor||!doneBtn)return;"
       + "var current=srcEl?JSON.parse(srcEl.textContent):'';"
       + "var tapTimes=[];"
+      + "var editStartScrollY=0;"
 
-      // Editor fills the visual viewport — shrinks when keyboard opens.
       + "function fitEditor(){"
-      + "  try{"
-      + "    var vv=window.visualViewport;"
+      + "  try{var vv=window.visualViewport;"
       + "    var h=vv?vv.height:window.innerHeight;"
       + "    editor.style.height=h+'px';"
       + "  }catch(e){}"
       + "}"
-      + "if(window.visualViewport){"
+      + "if(window.visualViewport)"
       + "  window.visualViewport.addEventListener('resize',fitEditor);"
-      + "}"
       + "window.addEventListener('resize',fitEditor);"
 
-      // Estimate source position of a tap in the rendered view by grabbing a
-      // short snippet near the tap and searching for it in the source.
       + "function sourcePosFromPoint(x,y){"
       + "  try{"
       + "    var range=null;"
@@ -301,7 +394,6 @@ public class ReaderRenderer {
       + "    if(!snippet)return 0;"
       + "    var idx=current.indexOf(snippet);"
       + "    if(idx>=0)return idx+(off-start);"
-      // Fallback: word before the caret
       + "    var pre=text.substring(0,off);"
       + "    var words=pre.split(/\\s+/);"
       + "    var last=words[words.length-1];"
@@ -315,6 +407,7 @@ public class ReaderRenderer {
 
       + "function enterEditAt(x,y){"
       + "  if(editing)return;"
+      + "  editStartScrollY=window.scrollY||window.pageYOffset||0;"
       + "  var pos=sourcePosFromPoint(x,y);"
       + "  editing=true;"
       + "  editor.value=current;"
@@ -344,10 +437,10 @@ public class ReaderRenderer {
       + "  editor.style.display='none';view.style.display='';doneBtn.style.display='none';"
       + "  try{document.body.style.removeProperty('padding-top');}catch(e){}"
       + "  if(save&&v!==current){current=v;"
-      + "    try{__HashiruNative.saveAndReload(v);}catch(e){}}"
+      + "    try{__HashiruNative.saveAndReload(v,editStartScrollY);}catch(e){}"
+      + "  }"
       + "}"
 
-      // Triple tap (3 taps within 500ms), cursor placed at third tap location.
       + "view.addEventListener('touchend',function(e){"
       + "  if(e.changedTouches.length!==1)return;"
       + "  var t=e.changedTouches[0];"

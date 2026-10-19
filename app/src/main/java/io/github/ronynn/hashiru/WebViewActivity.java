@@ -17,6 +17,7 @@ import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
 import android.media.MediaMetadata;
 import android.media.session.MediaSession;
 import android.media.session.PlaybackState;
@@ -60,7 +61,6 @@ public class WebViewActivity extends Activity {
     private static final String ACTION_MEDIA_CMD = "io.github.ronynn.hashiru.MEDIA_CMD";
     private static final int NOTIFICATION_COLOR = 0xFF1976D2;
 
-    /** Hard cap on reader file size — WebView chokes on huge pages. */
     private static final int MAX_READER_BYTES = 5 * 1024 * 1024;
 
     private LocalFileServer server;
@@ -83,13 +83,10 @@ public class WebViewActivity extends Activity {
     private String pendingSaveMime;
     private String pendingSaveBase64;
 
-    private int editStartScrollY = 0;
-
     private MediaSession mediaSession;
     private boolean mediaPlaying = false;
     private String currentMediaTitle = "Media";
 
-    /** Per-instance notification ID so multiple tasks don't clobber each other. */
     private final int notifId = System.identityHashCode(this) & 0x7FFFFFFF;
 
     private final BroadcastReceiver mediaCmdReceiver = new BroadcastReceiver() {
@@ -109,6 +106,11 @@ public class WebViewActivity extends Activity {
         settings = ReaderSettings.load(this);
         statusBarHeight = getStatusBarHeight();
 
+        // Paint window + WebView in theme colour before any content arrives,
+        // otherwise there's a white flash before HTML renders.
+        int themeBg = ReaderRenderer.backgroundArgb(settings.theme);
+        getWindow().setBackgroundDrawable(new ColorDrawable(themeBg));
+
         IntentFilter filter = new IntentFilter(ACTION_MEDIA_CMD);
         if (Build.VERSION.SDK_INT >= 33)
             registerReceiver(mediaCmdReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
@@ -116,6 +118,7 @@ public class WebViewActivity extends Activity {
             registerReceiver(mediaCmdReceiver, filter);
 
         web = findViewById(R.id.web);
+        web.setBackgroundColor(themeBg);
         web.setOverScrollMode(View.OVER_SCROLL_NEVER);
         web.setVerticalScrollBarEnabled(false);
         web.setHorizontalScrollBarEnabled(false);
@@ -158,8 +161,6 @@ public class WebViewActivity extends Activity {
             @Override
             public void onPageFinished(WebView v, String url) {
                 injectTapHighlightFix();
-                if (isReader) injectReaderStatusBar(
-                        getResources().getConfiguration().orientation);
                 injectEruda();
                 injectMediaHooks();
 
@@ -199,9 +200,6 @@ public class WebViewActivity extends Activity {
             }
         });
 
-        // ---- Intent routing ----
-        // 1) Internal launch from MainActivity (has extras): SAF-backed file.
-        // 2) External ACTION_VIEW: file content:// or file:// URI.
         String treeUriStr = getIntent().getStringExtra(EXTRA_TREE_URI);
         String relPath = getIntent().getStringExtra(EXTRA_REL_PATH);
 
@@ -210,7 +208,6 @@ public class WebViewActivity extends Activity {
         } else if (Intent.ACTION_VIEW.equals(getIntent().getAction())
                 && getIntent().getData() != null) {
             openDirectFile(getIntent().getData());
-            applyOrientation(getResources().getConfiguration().orientation);
         } else {
             finish();
         }
@@ -229,23 +226,47 @@ public class WebViewActivity extends Activity {
         try { server = LocalFileServer.acquire(currentTreeUri, getContentResolver(), this); }
         catch (IOException e) { finish(); return; }
 
-        web.loadUrl("http://127.0.0.1:" + server.getListeningPort()
-                + "/" + encodePath(relPath));
-
+        // Fullscreen chrome set BEFORE WebView loads → no FOUC.
+        // Padding is baked into the HTML by the server, so no post-load shift.
         applyOrientation(getResources().getConfiguration().orientation);
+        web.loadUrl(buildServerUrl());
+    }
+
+    private String buildServerUrl() {
+        return "http://127.0.0.1:" + server.getListeningPort()
+                + "/" + encodePath(currentRelPath)
+                + "?sbh=" + currentSbhDp()
+                + "&blur=" + (settings.blurEnabled ? "1" : "0");
+    }
+
+    /**
+     * Padding to apply below status bar, in CSS px. Non-zero for reader in
+     * portrait regardless of blur — blur only controls the visual overlay.
+     */
+    private int currentSbhDp() {
+        if (!isReader) return 0;
+        if (getResources().getConfiguration().orientation
+                != Configuration.ORIENTATION_PORTRAIT) return 0;
+        if (statusBarHeight <= 0) return 0;
+        float density = getResources().getDisplayMetrics().density;
+        return Math.round(statusBarHeight / density);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
         ReaderSettings fresh = ReaderSettings.load(this);
-        boolean changed = !fresh.theme.equals(settings.theme)
+        boolean appearanceChanged = !fresh.theme.equals(settings.theme)
                 || !fresh.font.equals(settings.font)
                 || fresh.fontSize != settings.fontSize;
+        boolean blurChanged = fresh.blurEnabled != settings.blurEnabled;
         settings = fresh;
-        if (changed && isReader && web != null) {
-            reloadCurrentFile();
+        if (isReader && web != null && (appearanceChanged || blurChanged)) {
+            int themeBg = ReaderRenderer.backgroundArgb(settings.theme);
+            getWindow().setBackgroundDrawable(new ColorDrawable(themeBg));
+            web.setBackgroundColor(themeBg);
             applyOrientation(getResources().getConfiguration().orientation);
+            reloadCurrentFile();
         }
         if (!mediaPlaying) injectEruda();
     }
@@ -260,7 +281,7 @@ public class WebViewActivity extends Activity {
     }
 
     // ==================================================================
-    //  JS bridge (downloads, edit save, media)
+    //  JS bridge
     // ==================================================================
 
     public class SaveBridge {
@@ -272,18 +293,13 @@ public class WebViewActivity extends Activity {
         }
 
         @JavascriptInterface
-        public void onEditStart(int scrollY) {
-            editStartScrollY = scrollY;
-        }
-
-        @JavascriptInterface
-        public boolean saveAndReload(final String source) {
+        public boolean saveAndReload(final String source, final int scrollY) {
             if (source == null) return false;
             if (!saveSourceSync(source)) {
                 Log.w(TAG, "save failed");
                 return false;
             }
-            pendingRestoreY = editStartScrollY;
+            pendingRestoreY = Math.max(0, scrollY);
             runOnUiThread(WebViewActivity.this::reloadCurrentFile);
             return true;
         }
@@ -378,14 +394,23 @@ public class WebViewActivity extends Activity {
 
     private void reloadCurrentFile() {
         if (web == null) return;
+        if (pendingRestoreY < 0) {
+            pendingRestoreY = web.getScrollY();
+        }
         if (server != null && currentRelPath != null) {
-            web.reload();
+            web.loadUrl(buildServerUrl());
         } else if (currentDirectUri != null) {
             try {
                 InputStream in = getContentResolver().openInputStream(currentDirectUri);
                 if (in == null) return;
                 String raw = readAllCapped(in);
-                String html = ReaderRenderer.render(currentExt, raw, settings);
+                String html;
+                if (currentExt.equals("html") || currentExt.equals("htm")) {
+                    html = raw;
+                } else {
+                    html = ReaderRenderer.render(
+                            currentExt, raw, settings, currentSbhDp(), settings.blurEnabled);
+                }
                 String baseUrl = "https://hashiru.local/"
                         + Uri.encode(currentDirectUri.toString()) + "/";
                 web.loadDataWithBaseURL(baseUrl, html, "text/html", "utf-8", null);
@@ -394,75 +419,8 @@ public class WebViewActivity extends Activity {
     }
 
     // ==================================================================
-    //  Status bar / reader chrome
+    //  Tap highlight
     // ==================================================================
-
-    private void injectReaderStatusBar(int orientation) {
-        if (web == null) return;
-
-        float density = getResources().getDisplayMetrics().density;
-        int topPadCss = 0;
-        if (orientation == Configuration.ORIENTATION_PORTRAIT && statusBarHeight > 0) {
-            topPadCss = Math.round(statusBarHeight / density);   // px → dp
-        }
-
-        if (topPadCss <= 0) {
-            web.evaluateJavascript(
-                "(function(){"
-                + "var s=document.getElementById('hashiru-statusblur-style');if(s)s.remove();"
-                + "var b=document.getElementById('hashiru-statusblur');if(b)b.remove();"
-                + "})();", null);
-            return;
-        }
-
-        // Blur bar extends only 6dp past the status bar → subtle fade,
-        // no meaningful reading space lost.
-        int blurHeight = topPadCss + 6;
-
-        // Light themes need a light-tinted overlay, dark themes a dark one.
-        String overlayColor = settings.isLightTheme()
-            ? "linear-gradient(to bottom,"
-              + "rgba(255,255,255,0.45) 0%,"
-              + "rgba(255,255,255,0.18) 50%,"
-              + "rgba(255,255,255,0) 100%)"
-            : "linear-gradient(to bottom,"
-              + "rgba(0,0,0,0.14) 0%,"
-              + "rgba(0,0,0,0.06) 50%,"
-              + "rgba(0,0,0,0) 100%)";
-
-        String js = "(function(){"
-            + "var oldS=document.getElementById('hashiru-statusblur-style');"
-            + "if(oldS)oldS.parentNode.removeChild(oldS);"
-            + "var oldB=document.getElementById('hashiru-statusblur');"
-            + "if(oldB)oldB.parentNode.removeChild(oldB);"
-
-            // Body padding only = status-bar height (reading area preserved).
-            + "var st=document.createElement('style');"
-            + "st.id='hashiru-statusblur-style';"
-            + "st.textContent="
-            +   "'body{padding-top:" + topPadCss + "px !important;}' +"
-            +   "'#hashiru-editor{padding-top:" + (topPadCss + 16) + "px !important;}' +"
-            +   "'#hashiru-done{top:" + (topPadCss + 10) + "px !important;' +"
-            +     "'right:16px !important;bottom:auto !important;' +"
-            +     "'height:40px !important;border-radius:10px !important;' +"
-            +     "'padding:0 14px !important;font-size:14px !important;}';"
-            + "document.head.appendChild(st);"
-
-            + "var d=document.createElement('div');"
-            + "d.id='hashiru-statusblur';"
-            + "d.style.cssText='position:fixed;top:0;left:0;right:0;"
-            +   "height:" + blurHeight + "px;"
-            +   "-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);"
-            +   "background:" + overlayColor + ";"
-            +   "-webkit-mask-image:linear-gradient(to bottom,"
-            +     "black 0%,black 40%,transparent 100%);"
-            +   "mask-image:linear-gradient(to bottom,"
-            +     "black 0%,black 40%,transparent 100%);"
-            +   "z-index:9700;pointer-events:none;';"
-            + "document.body.appendChild(d);"
-            + "})();";
-        web.evaluateJavascript(js, null);
-    }
 
     private void injectTapHighlightFix() {
         String js = "(function(){try{"
@@ -494,7 +452,7 @@ public class WebViewActivity extends Activity {
     }
 
     // ==================================================================
-    //  Media (MediaSession + notification, no permission prompt)
+    //  Media
     // ==================================================================
 
     private void ensureMediaSession() {
@@ -581,7 +539,6 @@ public class WebViewActivity extends Activity {
                 .setPackage(getPackageName()).putExtra("cmd", "toggle");
         PendingIntent togglePi = PendingIntent.getBroadcast(this, 0, toggleI, piFlags);
 
-        // Single action: play ↔ pause. No stop button, no seekbar.
         Notification.MediaStyle style = new Notification.MediaStyle()
                 .setShowActionsInCompactView(0);
         if (mediaSession != null) style.setMediaSession(mediaSession.getSessionToken());
@@ -614,14 +571,10 @@ public class WebViewActivity extends Activity {
         try {
             notificationManager().notify(notifId, b.build());
         } catch (SecurityException e) {
-            // No POST_NOTIFICATIONS on 13+ — silently skip; MediaSession
-            // hardware callbacks still function.
             Log.d(TAG, "notification blocked (missing POST_NOTIFICATIONS)");
         }
 
         if (mediaSession != null) {
-            // No duration in metadata + PLAYBACK_POSITION_UNKNOWN
-            // → MediaStyle hides the seekbar / time selector.
             mediaSession.setMetadata(new MediaMetadata.Builder()
                     .putString(MediaMetadata.METADATA_KEY_TITLE,
                             title == null ? "Media" : title)
@@ -792,15 +745,20 @@ public class WebViewActivity extends Activity {
                     + Uri.encode(fileUri.toString()) + "/";
 
             if (currentExt.equals("html") || currentExt.equals("htm")) {
+                applyOrientation(getResources().getConfiguration().orientation);
                 web.loadDataWithBaseURL(baseUrl, raw, "text/html", "utf-8", null);
                 return;
             }
 
+            // Reader: fullscreen chrome BEFORE load.
+            applyOrientation(getResources().getConfiguration().orientation);
             String html;
             if (isReaderExt(currentExt)) {
-                html = ReaderRenderer.render(currentExt, raw, settings);
+                html = ReaderRenderer.render(
+                        currentExt, raw, settings, currentSbhDp(), settings.blurEnabled);
             } else {
-                html = ReaderRenderer.render("txt", raw, settings);
+                html = ReaderRenderer.render(
+                        "txt", raw, settings, currentSbhDp(), settings.blurEnabled);
             }
             web.loadDataWithBaseURL(baseUrl, html, "text/html", "utf-8", null);
         } catch (IOException e) { finish(); }
@@ -914,7 +872,10 @@ public class WebViewActivity extends Activity {
     public void onConfigurationChanged(Configuration cfg) {
         super.onConfigurationChanged(cfg);
         applyOrientation(cfg.orientation);
-        if (isReader) injectReaderStatusBar(cfg.orientation);
+        // sbh differs between orientations → reload with new padding baked in.
+        if (isReader && web != null) {
+            reloadCurrentFile();
+        }
     }
 
     private void applyOrientation(int orientation) {
@@ -923,6 +884,7 @@ public class WebViewActivity extends Activity {
         WindowManager.LayoutParams lp = win.getAttributes();
 
         if (orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            // Immersive fullscreen — no status bar at all.
             decor.setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                             | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
@@ -941,6 +903,8 @@ public class WebViewActivity extends Activity {
         }
 
         if (isReader) {
+            // Fullscreen portrait with transparent status bar. Content padding
+            // is baked into the HTML; blur overlay (if enabled) sits on top.
             win.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
             win.setStatusBarColor(Color.TRANSPARENT);
             win.setNavigationBarColor(BAR_COLOR_HTML);
@@ -953,6 +917,7 @@ public class WebViewActivity extends Activity {
                 lp.layoutInDisplayCutoutMode =
                         WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
         } else {
+            // Non-reader (HTML apps): opaque chrome.
             win.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
             win.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
             win.setStatusBarColor(BAR_COLOR_HTML);
