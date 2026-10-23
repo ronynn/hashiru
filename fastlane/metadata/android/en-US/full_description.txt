@@ -3,6 +3,8 @@
 hashiru (走る) is a minimal Android viewer for local HTML applications and plain-text md documentation, for quickly building and setting up custom apps for personal use, inspired by Termux-GUI and APDE
 . Renders any HTML file from user-selected storage with its sibling JS, CSS, fonts, and images intact, using a local server bound to 127.0.0.1.17463
 
+Markdown/Text renderer cannot connect to internet.
+
 
 ## Features
 
@@ -47,18 +49,6 @@ const NOTES = 'notepad.v1.notes';
 - Reading markdown documentation stored locally with persistent scroll state across sessions.
 - Side-loading progressive web app snapshots and offline-first static sites.
 - Viewing HTML output from tools that emit self-contained reports such as coverage, benchmarks, and static analyzers.
-
-## Inspiration
-
-Newer androids will feature an AI generated widget feature to allow users to quickly make custom widgets for their needs, I wanted this tech now.
-
-- Termux GUI uses python for making native android UI based custom software, including persistent storage and process-level isolation.
-- APDE, Android Processing IDE, demonstrated in-editor authoring and execution of sketch-style programs entirely on-device, without a PC build step, and established that a mobile IDE workflow is usable when the runtime is embedded in the app rather than delegated to an external toolchain.
-
-Hashiru applies the same principle to HTML documents: the runtime lives in the app, relative paths resolve correctly because the server and client share a loopback origin, and the user's existing folder of files becomes the project. No build step, no server configuration, no hosting (only alterntive to this system is to make and host a PWA).
-
-
-
 
 
 

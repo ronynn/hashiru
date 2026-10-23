@@ -30,7 +30,7 @@ public class ReaderRenderer {
 
     public static String render(String ext, String raw,
                                 ReaderSettings settings,
-                                int sbhDp, boolean blurEnabled) {
+                                int sbhDp, int nbhDp, boolean blurEnabled) {
         boolean isMd = ext.equals("md") || ext.equals("markdown") || ext.equals("txt");
         boolean isCsv = ext.equals("csv");
 
@@ -38,10 +38,6 @@ public class ReaderRenderer {
         if (isCsv) {
             body = renderCsv(raw);
         } else if (isMd) {
-            // Parse, then promote every SoftLineBreak → HardLineBreak so single
-            // newlines render as visible line breaks (matches note-taking
-            // expectations). Code blocks contain literal content, not
-            // line-break nodes, so code samples are untouched.
             Node doc = PARSER.parse(raw);
             convertSoftBreaksToHard(doc);
             body = RENDERER.render(doc);
@@ -50,7 +46,7 @@ public class ReaderRenderer {
         } else {
             body = "<pre class=\"plain\">" + escapeHtml(raw) + "</pre>";
         }
-        return wrap(body, raw, settings, sbhDp, blurEnabled);
+        return wrap(body, raw, settings, sbhDp, nbhDp, blurEnabled);
     }
 
     private static void convertSoftBreaksToHard(Node node) {
@@ -149,17 +145,48 @@ public class ReaderRenderer {
         }
     }
 
+    /** Single-pass escaper — one allocation (or none if nothing to escape). */
     private static String escapeHtml(String s) {
-        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+        if (s == null) return "";
+        int n = s.length();
+        StringBuilder sb = null;
+        for (int i = 0; i < n; i++) {
+            char c = s.charAt(i);
+            String rep = null;
+            switch (c) {
+                case '&': rep = "&amp;"; break;
+                case '<': rep = "&lt;";  break;
+                case '>': rep = "&gt;";  break;
+            }
+            if (rep != null) {
+                if (sb == null) {
+                    sb = new StringBuilder(n + 16);
+                    sb.append(s, 0, i);
+                }
+                sb.append(rep);
+            } else if (sb != null) {
+                sb.append(c);
+            }
+        }
+        return sb == null ? s : sb.toString();
     }
 
     private static String wrap(String body, String rawSource, ReaderSettings s,
-                               int sbhDp, boolean blurEnabled) {
+                               int sbhDp, int nbhDp, boolean blurEnabled) {
         Palette p = paletteFor(s.theme);
-        String css = themeCss(s, p, sbhDp, blurEnabled);
+        String css = themeCss(s, p, sbhDp, nbhDp, blurEnabled);
         String sourceJson = jsonEscape(rawSource);
 
+        // default-src 'none' kills the network entirely; 'unsafe-inline' is
+        // needed for the embedded <style> and <script>; data: for inline imgs.
+        String csp = "default-src 'none'; "
+                   + "img-src 'self' data:; "
+                   + "style-src 'unsafe-inline'; "
+                   + "script-src 'unsafe-inline'; "
+                   + "font-src 'self';";
+
         return "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+             + "<meta http-equiv=\"Content-Security-Policy\" content=\"" + csp + "\">"
              + "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">"
              + "<meta name=\"referrer\" content=\"no-referrer\">"
              + "<style>" + css + "</style></head><body>"
@@ -173,6 +200,7 @@ public class ReaderRenderer {
              + "</button>"
              + "<div id=\"hashiru-sb-track\"><div id=\"hashiru-sb-thumb\"></div></div>"
              + "<div id=\"hashiru-statusblur\"></div>"
+             + "<div id=\"hashiru-navblur\"></div>"
              + "<script id=\"hashiru-source\" type=\"application/json\">" + sourceJson + "</script>"
              + "<script>" + EDIT_SCRIPT + "</script>"
              + "</body></html>";
@@ -204,44 +232,60 @@ public class ReaderRenderer {
     private static String fontCss(ReaderSettings s) {
         switch (s.font) {
             case "sans-light":     return "font-family:sans-serif;font-weight:300;";
-            case "sans-condensed": return "font-family:sans-serif;font-stretch:75%;";
+            case "sans-condensed": return "font-family:sans-serif-condensed;";
             case "serif":          return "font-family:serif;";
             case "mono":           return "font-family:monospace;";
             default:               return "font-family:sans-serif;";
         }
     }
 
-    private static String themeCss(ReaderSettings s, Palette p, int sbhDp, boolean blurEnabled) {
+    private static String themeCss(ReaderSettings s, Palette p,
+                                   int sbhDp, int nbhDp, boolean blurEnabled) {
         int size = s.fontSize;
-        int topPad = sbhDp > 0 ? sbhDp + 4 : 8;
-        int btnTop = sbhDp > 0 ? sbhDp + 12 : 12;
-        int sbTop = sbhDp > 0 ? sbhDp + 8 : 8;
-        int editorTop = sbhDp > 0 ? sbhDp + 68 : 68;
 
-        boolean showBlur = blurEnabled && sbhDp > 0;
-        int blurH = showBlur ? sbhDp + 6 : 0;
+        // Same top offset in view AND edit mode → no layout shift when toggling.
+        // Clears the 44dp floating button + 12dp gap under it.
+        int contentTop = sbhDp + 68;
 
-        String blurGradient = s.isLightTheme()
-            ? "linear-gradient(to bottom,"
-              + "rgba(255,255,255,0.45) 0%,"
-              + "rgba(255,255,255,0.18) 50%,"
-              + "rgba(255,255,255,0) 100%)"
-            : "linear-gradient(to bottom,"
-              + "rgba(0,0,0,0.14) 0%,"
-              + "rgba(0,0,0,0.06) 50%,"
-              + "rgba(0,0,0,0) 100%)";
+        // Fall back to a reasonable gesture-nav height if insets weren't measured.
+        int navBarDp  = nbhDp > 0 ? nbhDp : 24;
+        int bottomPad = navBarDp + 40;
 
-        String blurRule = showBlur
+        int btnTop    = sbhDp + 12;
+        int sbTop     = sbhDp + 8;
+        int editorTop = contentTop;
+
+        // Both fades are driven solely by the blur toggle.
+        boolean showTopFade = blurEnabled;
+        boolean showBotFade = blurEnabled;
+        int topFadeH = sbhDp + 6;
+        int botFadeH = navBarDp + 6;
+
+        // Fade = solid theme-background div + mask that fades the div itself.
+        // No backdrop-filter → no per-frame GPU cost. Text dissolves into bg.
+        String topFadeRule = showTopFade
             ? "#hashiru-statusblur{position:fixed;top:0;left:0;right:0;"
-              + "height:" + blurH + "px;"
-              + "-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);"
-              + "background:" + blurGradient + ";"
+              + "height:" + topFadeH + "px;"
+              + "background:" + p.bg + ";"
               + "-webkit-mask-image:linear-gradient(to bottom,"
               +   "black 0%,black 40%,transparent 100%);"
               + "mask-image:linear-gradient(to bottom,"
               +   "black 0%,black 40%,transparent 100%);"
               + "z-index:9700;pointer-events:none;}"
             : "#hashiru-statusblur{display:none;}";
+
+        // z-index 9400: above #hashiru-view, but *below* the editor (9500),
+        // so text doesn't fade under your caret while you're typing.
+        String botFadeRule = showBotFade
+            ? "#hashiru-navblur{position:fixed;bottom:0;left:0;right:0;"
+              + "height:" + botFadeH + "px;"
+              + "background:" + p.bg + ";"
+              + "-webkit-mask-image:linear-gradient(to top,"
+              +   "black 0%,black 40%,transparent 100%);"
+              + "mask-image:linear-gradient(to top,"
+              +   "black 0%,black 40%,transparent 100%);"
+              + "z-index:9400;pointer-events:none;}"
+            : "#hashiru-navblur{display:none;}";
 
         String glassButton =
             "position:fixed;"
@@ -261,7 +305,7 @@ public class ReaderRenderer {
 
         return "html{background:" + p.bg + ";color:" + p.text + ";overflow-x:hidden;}"
             + "body{max-width:48em;margin:0 auto;"
-            +   "padding:" + topPad + "px 1em 4em;"
+            +   "padding:" + contentTop + "px 1em " + bottomPad + "px;"
             +   fontCss(s) + "font-size:" + size + "px;line-height:1.55;"
             +   "-webkit-text-size-adjust:100%;-webkit-tap-highlight-color:transparent;"
             +   "overflow-wrap:break-word;touch-action:manipulation;}"
@@ -313,11 +357,11 @@ public class ReaderRenderer {
             +   "border:none;outline:none;box-sizing:border-box;"
             +   "padding:20px;padding-top:" + editorTop + "px;padding-bottom:40vh;"
             +   "resize:none;display:none;overflow-y:auto;z-index:9500;}"
-            // Glassy buttons
+            // Buttons
             + "#hashiru-edit-btn{" + glassButton + "display:flex;}"
             + "#hashiru-done{" + glassButton + "display:none;}"
             + "#hashiru-edit-btn svg,#hashiru-done svg{width:20px;height:20px;display:block;}"
-            // Scrollbar (opacity-based hiding so clientHeight stays measurable)
+            // Scrollbar
             + "#hashiru-sb-track{position:fixed;right:0;"
             +   "top:" + sbTop + "px;bottom:20px;width:20px;"
             +   "z-index:8000;touch-action:none;cursor:pointer;"
@@ -326,13 +370,17 @@ public class ReaderRenderer {
             +   "width:4px;min-height:24px;"
             +   "background:rgba(127,127,127,0.55);border-radius:2px;"
             +   "pointer-events:none;}"
-            // Landscape tweaks
+            // Landscape: no side bars, no fades, proportional padding
             + "@media (orientation:landscape){"
             +   "#hashiru-statusblur{display:none !important;}"
+            +   "#hashiru-navblur{display:none !important;}"
+            +   "body{max-width:none;"
+            +     "padding-left:max(1em,4vw);padding-right:max(1em,4vw);}"
             +   "#hashiru-editor{left:50%;right:auto;width:90%;max-width:900px;"
             +     "transform:translateX(-50%);}"
             + "}"
-            + blurRule;
+            + topFadeRule
+            + botFadeRule;
     }
 
     private static class Palette {
@@ -471,7 +519,6 @@ public class ReaderRenderer {
       + "  window.visualViewport.addEventListener('resize',fitEditor);"
       + "window.addEventListener('resize',fitEditor);"
 
-      // Scrollbar
       + "function updateScrollbar(){"
       + "  if(!sbTrack||!sbThumb)return;"
       + "  if(editing){sbTrack.style.opacity='0';sbTrack.style.pointerEvents='none';return;}"
@@ -516,7 +563,6 @@ public class ReaderRenderer {
       + "  setTimeout(updateScrollbar,500);"
       + "}"
 
-      // Edit
       + "function enterEdit(){"
       + "  if(editing)return;"
       + "  editStartScrollY=window.scrollY||window.pageYOffset||0;"

@@ -30,8 +30,6 @@ public class LocalFileServer extends NanoHTTPD {
     private Context appContext;
     private String rootDocId;
 
-    // csv added: server renders it through ReaderRenderer → text/html → WebView
-    // never sees text/csv or octet-stream, so setDownloadListener won't fire.
     private static final Set<String> READER_EXTS = new HashSet<>(
             Arrays.asList("md", "markdown", "txt", "org", "twee", "csv"));
 
@@ -63,19 +61,18 @@ public class LocalFileServer extends NanoHTTPD {
         for (String seg : uri.split("/"))
             if ("..".equals(seg)) return plain(Response.Status.FORBIDDEN, "Forbidden");
 
-        int sbhDp = 0;
+        int sbhDp = 0, nbhDp = 0;
         boolean blur = true;
         try {
             Map<String, String> parms = session.getParms();
-            String sbh = parms.get("sbh");
-            if (sbh != null) sbhDp = Integer.parseInt(sbh);
-            String b = parms.get("blur");
-            if (b != null) blur = "1".equals(b);
+            String sbh = parms.get("sbh");  if (sbh != null) sbhDp = Integer.parseInt(sbh);
+            String nbh = parms.get("nbh");  if (nbh != null) nbhDp = Integer.parseInt(nbh);
+            String b   = parms.get("blur"); if (b   != null) blur  = "1".equals(b);
         } catch (Exception ignored) {}
 
         try {
             if (uri.isEmpty())
-                return serveDirOrIndex(rootDocId, "/", sbhDp, blur, session);
+                return serveDirOrIndex(rootDocId, "/", sbhDp, nbhDp, blur, session);
 
             String cur = rootDocId;
             for (String part : uri.split("/")) {
@@ -85,7 +82,7 @@ public class LocalFileServer extends NanoHTTPD {
                     return plain(Response.Status.NOT_FOUND, "Not found: " + uri);
                 cur = next;
             }
-            return serveDoc(cur, uri, sbhDp, blur, session);
+            return serveDoc(cur, uri, sbhDp, nbhDp, blur, session);
         } catch (Exception e) {
             Log.w(TAG, "serve failed for " + uri, e);
             return plain(Response.Status.INTERNAL_ERROR,
@@ -94,9 +91,10 @@ public class LocalFileServer extends NanoHTTPD {
     }
 
     private Response serveDirOrIndex(String dirDocId, String pathForError,
-                                     int sbhDp, boolean blur, IHTTPSession session) {
+                                     int sbhDp, int nbhDp, boolean blur,
+                                     IHTTPSession session) {
         String id = findChild(dirDocId, "index.html");
-        if (id != null) return serveDoc(id, pathForError, sbhDp, blur, session);
+        if (id != null) return serveDoc(id, pathForError, sbhDp, nbhDp, blur, session);
         return plain(Response.Status.NOT_FOUND, "No index.html at " + pathForError);
     }
 
@@ -118,7 +116,7 @@ public class LocalFileServer extends NanoHTTPD {
     }
 
     private Response serveDoc(String docId, String pathForError,
-                              int sbhDp, boolean blur, IHTTPSession session) {
+                              int sbhDp, int nbhDp, boolean blur, IHTTPSession session) {
         Uri docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId);
 
         String mime = null, name = null;
@@ -142,7 +140,7 @@ public class LocalFileServer extends NanoHTTPD {
         }
 
         if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime))
-            return serveDirOrIndex(docId, pathForError, sbhDp, blur, session);
+            return serveDirOrIndex(docId, pathForError, sbhDp, nbhDp, blur, session);
 
         String ext = extensionOf(name);
 
@@ -154,7 +152,8 @@ public class LocalFileServer extends NanoHTTPD {
                 String raw = readAll(in);
                 ReaderSettings settings = appContext != null
                         ? ReaderSettings.load(appContext) : new ReaderSettings();
-                String html = ReaderRenderer.render(ext, raw, settings, sbhDp, blur);
+                String html = ReaderRenderer.render(
+                        ext, raw, settings, sbhDp, nbhDp, blur);
                 Response r = newFixedLengthResponse(
                         Response.Status.OK, "text/html; charset=utf-8", html);
                 r.addHeader("Cache-Control", "no-store");

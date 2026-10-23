@@ -1,0 +1,7 @@
+- read text as md, 
+- top padding occurs before server starts to prevent fouc, space bw lines reduced
+- floating button top right or left if eruda toggle
+- theme switcher for md
+- blur in statusbar area, might chnge to just fade
+- support media player in status bar
+- eruda console toggle

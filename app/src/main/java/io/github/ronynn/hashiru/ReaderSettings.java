@@ -20,7 +20,7 @@ public class ReaderSettings {
     };
 
     public static final String[] FONT_VALUES = {
-        "sans", "sans-light", "sans-condensed", "serif", "mono"
+        "sans", "sans-light", "sans-serif-condensed", "serif", "mono"
     };
     public static final String[] FONT_LABELS = {
         "Sans", "Sans Light", "Sans Condensed", "Serif", "Monospace"

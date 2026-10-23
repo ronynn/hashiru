@@ -36,10 +36,12 @@ import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -82,6 +84,7 @@ public class WebViewActivity extends Activity {
     private String currentExt = "";
     private boolean isReader = false;
     private int statusBarHeight = 0;
+    private int navBarHeight = -1;
     private ReaderSettings settings;
 
     private String ident;
@@ -203,10 +206,22 @@ public class WebViewActivity extends Activity {
             }
 
             @Override
+            public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest req) {
+                Uri u = req.getUrl();
+                return blockExternalForReader(u == null ? null : u.toString());
+            }
+
+            @SuppressWarnings("deprecation")
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView v, String url) {
+                return blockExternalForReader(url);
+            }
+
+            @Override
             public void onPageFinished(WebView v, String url) {
                 injectTapHighlightFix();
                 injectEruda();
-                injectMediaHooks();
+                if (!isReader) injectMediaHooks();
 
                 if (pendingRestoreY >= 0) {
                     int y = pendingRestoreY;
@@ -254,6 +269,24 @@ public class WebViewActivity extends Activity {
         } else {
             openDirectFile(directUri);
         }
+    }
+
+    /**
+     * Drop any subresource request originating outside of the local server
+     * when in reader mode. Reader content is not supposed to reach the net.
+     */
+    private WebResourceResponse blockExternalForReader(String url) {
+        if (!isReader || url == null) return null;
+        Uri u = Uri.parse(url);
+        String scheme = u.getScheme();
+        if (scheme == null) return null;
+        if ("data".equals(scheme) || "blob".equals(scheme) || "about".equals(scheme))
+            return null;
+        String host = u.getHost();
+        if ("127.0.0.1".equals(host) || "localhost".equals(host)) return null;
+        // Empty response = dropped. Equivalent to a broken image / failed XHR.
+        return new WebResourceResponse("text/plain", "utf-8",
+                new ByteArrayInputStream(new byte[0]));
     }
 
     @Override
@@ -325,10 +358,12 @@ public class WebViewActivity extends Activity {
             String html;
             if (isReader) {
                 html = ReaderRenderer.render(
-                        currentExt, raw, settings, currentSbhDp(), settings.blurEnabled);
+                        currentExt, raw, settings,
+                        currentSbhDp(), currentNbhDp(), settings.blurEnabled);
             } else {
                 html = ReaderRenderer.render(
-                        "txt", raw, settings, currentSbhDp(), settings.blurEnabled);
+                        "txt", raw, settings,
+                        currentSbhDp(), currentNbhDp(), settings.blurEnabled);
             }
             web.loadDataWithBaseURL(baseUrl, html, "text/html", "utf-8", null);
         } catch (IOException e) { finish(); }
@@ -338,6 +373,7 @@ public class WebViewActivity extends Activity {
         return "http://127.0.0.1:" + server.getListeningPort()
                 + "/" + encodePath(currentRelPath)
                 + "?sbh=" + currentSbhDp()
+                + "&nbh=" + currentNbhDp()
                 + "&blur=" + (settings.blurEnabled ? "1" : "0");
     }
 
@@ -346,6 +382,29 @@ public class WebViewActivity extends Activity {
         if (statusBarHeight <= 0) return 0;
         float density = getResources().getDisplayMetrics().density;
         return Math.round(statusBarHeight / density);
+    }
+
+    private int currentNbhDp() {
+        if (!isReader) return 0;
+        int px = getNavigationBarHeight();
+        if (px <= 0) return 0;
+        float density = getResources().getDisplayMetrics().density;
+        return Math.round(px / density);
+    }
+
+    /** Reads navigation bar height from the framework resource — works pre-layout. */
+    private int getNavigationBarHeight() {
+        if (navBarHeight >= 0) return navBarHeight;
+        try {
+            int id = getResources().getIdentifier(
+                    "navigation_bar_height", "dimen", "android");
+            if (id > 0) {
+                navBarHeight = getResources().getDimensionPixelSize(id);
+                return navBarHeight;
+            }
+        } catch (Exception ignored) {}
+        navBarHeight = 0;
+        return 0;
     }
 
     private void scrollAfterLoad(WebView v, int y) {
@@ -398,8 +457,8 @@ public class WebViewActivity extends Activity {
     public void onConfigurationChanged(Configuration cfg) {
         super.onConfigurationChanged(cfg);
         applyOrientation(cfg.orientation);
-        // No reload — CSS media query handles landscape blur/editor width,
-        // and padding value is the same in both orientations.
+        // No reload — @media (orientation:landscape) handles the layout
+        // (padding, side bars, fade hiding) purely in CSS.
     }
 
     private void reloadCurrentFile() {
@@ -417,7 +476,8 @@ public class WebViewActivity extends Activity {
                     html = raw;
                 } else {
                     html = ReaderRenderer.render(
-                            currentExt, raw, settings, currentSbhDp(), settings.blurEnabled);
+                            currentExt, raw, settings,
+                            currentSbhDp(), currentNbhDp(), settings.blurEnabled);
                 }
                 String baseUrl = "https://hashiru.local/"
                         + Uri.encode(currentDirectUri.toString()) + "/";
@@ -924,7 +984,6 @@ public class WebViewActivity extends Activity {
         View decor = win.getDecorView();
         WindowManager.LayoutParams lp = win.getAttributes();
 
-        // HTML in landscape → fullscreen immersive.
         if (!isReader && orientation == Configuration.ORIENTATION_LANDSCAPE) {
             decor.setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
@@ -944,18 +1003,26 @@ public class WebViewActivity extends Activity {
         }
 
         if (isReader) {
-            // Reader portrait AND landscape: transparent status bar, content
-            // flows under it (status bar itself stays visible). Padding baked
-            // into HTML keeps text below the bar. Blur is suppressed by CSS
-            // in landscape.
+            // Transparent status bar AND transparent nav bar — content flows
+            // under both. HTML top/bottom padding keeps text clear of chrome;
+            // CSS overlay handles the top/bottom fade in portrait.
             win.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
             win.setStatusBarColor(Color.TRANSPARENT);
-            win.setNavigationBarColor(BAR_COLOR_HTML);
+            win.setNavigationBarColor(Color.TRANSPARENT);
+            if (Build.VERSION.SDK_INT >= 28)
+                win.setNavigationBarDividerColor(Color.TRANSPARENT);
+
             int flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
-            if (settings.isLightTheme() && Build.VERSION.SDK_INT >= 23)
-                flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
+            if (settings.isLightTheme()) {
+                if (Build.VERSION.SDK_INT >= 23)
+                    flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+                if (Build.VERSION.SDK_INT >= 26)
+                    flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            }
             decor.setSystemUiVisibility(flags);
+
             if (Build.VERSION.SDK_INT >= 28)
                 lp.layoutInDisplayCutoutMode =
                         WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
