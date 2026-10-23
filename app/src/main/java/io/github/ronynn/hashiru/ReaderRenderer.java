@@ -145,7 +145,6 @@ public class ReaderRenderer {
         }
     }
 
-    /** Single-pass escaper — one allocation, or none if nothing to escape. */
     private static String escapeHtml(String s) {
         if (s == null) return "";
         int n = s.length();
@@ -241,7 +240,6 @@ public class ReaderRenderer {
                                    int sbhDp, int nbhDp, boolean blurEnabled) {
         int size = s.fontSize;
 
-        // Portrait: same top offset in view + edit mode so nothing shifts.
         int contentTop = sbhDp + 68;
 
         int navBarDp  = nbhDp > 0 ? nbhDp : 24;
@@ -256,18 +254,16 @@ public class ReaderRenderer {
         int topFadeH = sbhDp + 6;
         int botFadeH = navBarDp + 6;
 
-        // ---- Fades ----
-        // The div is solid theme-bg; a partial-alpha mask makes it *partially*
-        // cover whatever is behind it. Text scrolling under is dimmed but
-        // NEVER completely hidden: the mask never reaches 100% opaque at the
-        // topmost stop, so at every point the reader sees a ghost of the text.
+        // Stronger fade — text is visible (dimmed) at every point, but the
+        // top of the mask is clearly denser than before so the fade is
+        // actually perceptible. 0.80 == 20% of text still shows through.
         String topMask = "linear-gradient(to bottom,"
-            + "rgba(0,0,0,0.60) 0%,"
-            + "rgba(0,0,0,0.30) 50%,"
+            + "rgba(0,0,0,0.80) 0%,"
+            + "rgba(0,0,0,0.35) 50%,"
             + "rgba(0,0,0,0) 100%)";
         String botMask = "linear-gradient(to top,"
-            + "rgba(0,0,0,0.60) 0%,"
-            + "rgba(0,0,0,0.30) 50%,"
+            + "rgba(0,0,0,0.80) 0%,"
+            + "rgba(0,0,0,0.35) 50%,"
             + "rgba(0,0,0,0) 100%)";
 
         String topFadeRule = showTopFade
@@ -279,8 +275,6 @@ public class ReaderRenderer {
               + "z-index:9700;pointer-events:none;}"
             : "#hashiru-statusblur{display:none;}";
 
-        // z-index 9400: above #hashiru-view but below the editor (9500),
-        // so text doesn't fade under your caret while you're typing.
         String botFadeRule = showBotFade
             ? "#hashiru-navblur{position:fixed;bottom:0;left:0;right:0;"
               + "height:" + botFadeH + "px;"
@@ -297,8 +291,8 @@ public class ReaderRenderer {
             + "border-radius:50%;"
             + "border:1px solid rgba(127,127,127,0.22);"
             + "background:rgba(127,127,127,0.10);"
-            + "-webkit-backdrop-filter:blur(8px) saturate(160%);"
-            + "backdrop-filter:blur(8px) saturate(160%);"
+            + "-webkit-backdrop-filter:blur(16px) saturate(160%);"
+            + "backdrop-filter:blur(16px) saturate(160%);"
             + "color:" + p.text + ";"
             + "font-family:sans-serif;font-size:20px;"
             + "box-sizing:border-box;z-index:9600;cursor:pointer;"
@@ -370,20 +364,19 @@ public class ReaderRenderer {
             +   "width:4px;min-height:24px;"
             +   "background:rgba(127,127,127,0.55);border-radius:2px;"
             +   "pointer-events:none;}"
-            // ---- Landscape: bars are opaque system UI, so content is in a
-            // normal viewport; reset sbhDp-derived offsets, use generous
-            // proportional side padding, hide both fades. ----
+            // ---- Landscape ----
+            // Status bar is transparent (text flows behind, top fade visible).
+            // Nav bar is opaque theme-color (content does NOT go behind it), so
+            // there's no bottom fade and no extra bottom padding for it.
+            // sbhDp-derived offsets (button top, editor top) stay as-is —
+            // they still clear the transparent status bar.
             + "@media (orientation:landscape){"
-            +   "#hashiru-statusblur{display:none !important;}"
             +   "#hashiru-navblur{display:none !important;}"
             +   "body{max-width:none;"
-            +     "padding-top:68px;"
-            +     "padding-bottom:16px;"
+            +     "padding-bottom:40px;"
             +     "padding-left:max(2em,5vw);"
             +     "padding-right:max(2em,5vw);}"
-            +   "#hashiru-edit-btn,#hashiru-done{top:12px;}"
-            +   "#hashiru-sb-track{top:8px;}"
-            +   "#hashiru-editor{padding-top:68px;"
+            +   "#hashiru-editor{padding-bottom:20vh;"
             +     "left:50%;right:auto;width:90%;max-width:900px;"
             +     "transform:translateX(-50%);}"
             + "}"

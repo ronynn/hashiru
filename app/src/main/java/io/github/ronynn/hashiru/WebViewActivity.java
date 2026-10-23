@@ -271,10 +271,6 @@ public class WebViewActivity extends Activity {
         }
     }
 
-    /**
-     * Drops every subresource request that does not target the local server
-     * while reading — markdown/txt/org/csv content cannot reach the internet.
-     */
     private WebResourceResponse blockExternalForReader(String url) {
         if (!isReader || url == null) return null;
         Uri u = Uri.parse(url);
@@ -391,7 +387,6 @@ public class WebViewActivity extends Activity {
         return Math.round(px / density);
     }
 
-    /** Framework resource — valid before layout, works pre-API 20. */
     private int getNavigationBarHeight() {
         if (navBarHeight >= 0) return navBarHeight;
         try {
@@ -456,9 +451,9 @@ public class WebViewActivity extends Activity {
     public void onConfigurationChanged(Configuration cfg) {
         super.onConfigurationChanged(cfg);
         applyOrientation(cfg.orientation);
-        // Bars flip between transparent (portrait, content under them) and
-        // opaque theme-color (landscape, content inside). CSS media query
-        // handles body padding + fade hiding — no reload needed.
+        // Bars flip: portrait → transparent (content under both bars),
+        // landscape → transparent status bar + opaque nav bar.
+        // Body padding / fade hiding handled by CSS media query — no reload.
     }
 
     private void reloadCurrentFile() {
@@ -1006,24 +1001,35 @@ public class WebViewActivity extends Activity {
 
         if (isReader) {
             win.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+
+            // Never let the OS inject its own contrast scrim. This is the fix
+            // for light themes showing a translucent-white nav bar even after
+            // setNavigationBarColor(TRANSPARENT).
+            if (Build.VERSION.SDK_INT >= 29) {
+                win.setStatusBarContrastEnforced(false);
+                win.setNavigationBarContrastEnforced(false);
+            }
+
             int themeBg = ReaderRenderer.backgroundArgb(settings.theme);
-            int flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
+            int flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                      | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
+
+            // Status bar: always transparent — content flows behind it, the
+            // top fade overlay provides the fade-out in both orientations.
+            win.setStatusBarColor(Color.TRANSPARENT);
 
             if (portrait) {
-                // Portrait: transparent bars, content flows under them.
-                // Fade overlays in the HTML give the top/bottom fade-out.
-                win.setStatusBarColor(Color.TRANSPARENT);
+                // Portrait also extends into the nav bar area.
                 win.setNavigationBarColor(Color.TRANSPARENT);
                 if (Build.VERSION.SDK_INT >= 28)
                     win.setNavigationBarDividerColor(Color.TRANSPARENT);
-                flags |= View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                        | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
+                flags |= View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
             } else {
-                // Landscape: opaque theme-colored bars. Content sits entirely
-                // inside them: no black band under the status bar, edit button
-                // always reachable, reading column never shifts when bars
-                // appear/disappear. Fades are CSS-hidden in landscape.
-                win.setStatusBarColor(themeBg);
+                // Landscape: nav bar stays opaque theme-colored. Content
+                // doesn't flow behind it → edit button is never covered,
+                // and there's no black band under the status bar because
+                // the status bar itself is transparent and the WebView's
+                // content is drawn right up to the top.
                 win.setNavigationBarColor(themeBg);
                 if (Build.VERSION.SDK_INT >= 28)
                     win.setNavigationBarDividerColor(themeBg);
@@ -1037,9 +1043,18 @@ public class WebViewActivity extends Activity {
             }
             decor.setSystemUiVisibility(flags);
 
-            if (Build.VERSION.SDK_INT >= 28)
-                lp.layoutInDisplayCutoutMode =
-                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
+            // Landscape: let content extend into the notch on the short edges
+            // (top/bottom in landscape) so no black stripes appear on the
+            // sides where the notch sits. Portrait keeps the safe DEFAULT.
+            if (Build.VERSION.SDK_INT >= 30) {
+                lp.layoutInDisplayCutoutMode = portrait
+                        ? WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
+                        : WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+            } else if (Build.VERSION.SDK_INT >= 28) {
+                lp.layoutInDisplayCutoutMode = portrait
+                        ? WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
+                        : WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            }
         } else {
             // HTML portrait: opaque chrome (unchanged).
             win.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
