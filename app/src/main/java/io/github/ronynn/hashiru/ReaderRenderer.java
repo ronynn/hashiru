@@ -145,7 +145,7 @@ public class ReaderRenderer {
         }
     }
 
-    /** Single-pass escaper — one allocation (or none if nothing to escape). */
+    /** Single-pass escaper — one allocation, or none if nothing to escape. */
     private static String escapeHtml(String s) {
         if (s == null) return "";
         int n = s.length();
@@ -177,8 +177,6 @@ public class ReaderRenderer {
         String css = themeCss(s, p, sbhDp, nbhDp, blurEnabled);
         String sourceJson = jsonEscape(rawSource);
 
-        // default-src 'none' kills the network entirely; 'unsafe-inline' is
-        // needed for the embedded <style> and <script>; data: for inline imgs.
         String csp = "default-src 'none'; "
                    + "img-src 'self' data:; "
                    + "style-src 'unsafe-inline'; "
@@ -243,11 +241,9 @@ public class ReaderRenderer {
                                    int sbhDp, int nbhDp, boolean blurEnabled) {
         int size = s.fontSize;
 
-        // Same top offset in view AND edit mode → no layout shift when toggling.
-        // Clears the 44dp floating button + 12dp gap under it.
+        // Portrait: same top offset in view + edit mode so nothing shifts.
         int contentTop = sbhDp + 68;
 
-        // Fall back to a reasonable gesture-nav height if insets weren't measured.
         int navBarDp  = nbhDp > 0 ? nbhDp : 24;
         int bottomPad = navBarDp + 40;
 
@@ -255,35 +251,42 @@ public class ReaderRenderer {
         int sbTop     = sbhDp + 8;
         int editorTop = contentTop;
 
-        // Both fades are driven solely by the blur toggle.
         boolean showTopFade = blurEnabled;
         boolean showBotFade = blurEnabled;
         int topFadeH = sbhDp + 6;
         int botFadeH = navBarDp + 6;
 
-        // Fade = solid theme-background div + mask that fades the div itself.
-        // No backdrop-filter → no per-frame GPU cost. Text dissolves into bg.
+        // ---- Fades ----
+        // The div is solid theme-bg; a partial-alpha mask makes it *partially*
+        // cover whatever is behind it. Text scrolling under is dimmed but
+        // NEVER completely hidden: the mask never reaches 100% opaque at the
+        // topmost stop, so at every point the reader sees a ghost of the text.
+        String topMask = "linear-gradient(to bottom,"
+            + "rgba(0,0,0,0.60) 0%,"
+            + "rgba(0,0,0,0.30) 50%,"
+            + "rgba(0,0,0,0) 100%)";
+        String botMask = "linear-gradient(to top,"
+            + "rgba(0,0,0,0.60) 0%,"
+            + "rgba(0,0,0,0.30) 50%,"
+            + "rgba(0,0,0,0) 100%)";
+
         String topFadeRule = showTopFade
             ? "#hashiru-statusblur{position:fixed;top:0;left:0;right:0;"
               + "height:" + topFadeH + "px;"
               + "background:" + p.bg + ";"
-              + "-webkit-mask-image:linear-gradient(to bottom,"
-              +   "black 0%,black 40%,transparent 100%);"
-              + "mask-image:linear-gradient(to bottom,"
-              +   "black 0%,black 40%,transparent 100%);"
+              + "-webkit-mask-image:" + topMask + ";"
+              + "mask-image:" + topMask + ";"
               + "z-index:9700;pointer-events:none;}"
             : "#hashiru-statusblur{display:none;}";
 
-        // z-index 9400: above #hashiru-view, but *below* the editor (9500),
+        // z-index 9400: above #hashiru-view but below the editor (9500),
         // so text doesn't fade under your caret while you're typing.
         String botFadeRule = showBotFade
             ? "#hashiru-navblur{position:fixed;bottom:0;left:0;right:0;"
               + "height:" + botFadeH + "px;"
               + "background:" + p.bg + ";"
-              + "-webkit-mask-image:linear-gradient(to top,"
-              +   "black 0%,black 40%,transparent 100%);"
-              + "mask-image:linear-gradient(to top,"
-              +   "black 0%,black 40%,transparent 100%);"
+              + "-webkit-mask-image:" + botMask + ";"
+              + "mask-image:" + botMask + ";"
               + "z-index:9400;pointer-events:none;}"
             : "#hashiru-navblur{display:none;}";
 
@@ -294,8 +297,8 @@ public class ReaderRenderer {
             + "border-radius:50%;"
             + "border:1px solid rgba(127,127,127,0.22);"
             + "background:rgba(127,127,127,0.10);"
-            + "-webkit-backdrop-filter:blur(16px) saturate(160%);"
-            + "backdrop-filter:blur(16px) saturate(160%);"
+            + "-webkit-backdrop-filter:blur(8px) saturate(160%);"
+            + "backdrop-filter:blur(8px) saturate(160%);"
             + "color:" + p.text + ";"
             + "font-family:sans-serif;font-size:20px;"
             + "box-sizing:border-box;z-index:9600;cursor:pointer;"
@@ -349,7 +352,6 @@ public class ReaderRenderer {
             + "hr{border:none;border-top:1px solid " + p.hr + ";margin:1.5em 0;}"
             + "img{max-width:100%;height:auto;border-radius:6px;}"
             + "p{margin:.6em 0;}"
-            // Editor
             + "#hashiru-editor{position:fixed;top:0;left:0;right:0;"
             +   "width:100%;height:100vh;height:100dvh;"
             +   "background:" + p.bg + ";color:" + p.text + ";"
@@ -357,11 +359,9 @@ public class ReaderRenderer {
             +   "border:none;outline:none;box-sizing:border-box;"
             +   "padding:20px;padding-top:" + editorTop + "px;padding-bottom:40vh;"
             +   "resize:none;display:none;overflow-y:auto;z-index:9500;}"
-            // Buttons
             + "#hashiru-edit-btn{" + glassButton + "display:flex;}"
             + "#hashiru-done{" + glassButton + "display:none;}"
             + "#hashiru-edit-btn svg,#hashiru-done svg{width:20px;height:20px;display:block;}"
-            // Scrollbar
             + "#hashiru-sb-track{position:fixed;right:0;"
             +   "top:" + sbTop + "px;bottom:20px;width:20px;"
             +   "z-index:8000;touch-action:none;cursor:pointer;"
@@ -370,13 +370,21 @@ public class ReaderRenderer {
             +   "width:4px;min-height:24px;"
             +   "background:rgba(127,127,127,0.55);border-radius:2px;"
             +   "pointer-events:none;}"
-            // Landscape: no side bars, no fades, proportional padding
+            // ---- Landscape: bars are opaque system UI, so content is in a
+            // normal viewport; reset sbhDp-derived offsets, use generous
+            // proportional side padding, hide both fades. ----
             + "@media (orientation:landscape){"
             +   "#hashiru-statusblur{display:none !important;}"
             +   "#hashiru-navblur{display:none !important;}"
             +   "body{max-width:none;"
-            +     "padding-left:max(1em,4vw);padding-right:max(1em,4vw);}"
-            +   "#hashiru-editor{left:50%;right:auto;width:90%;max-width:900px;"
+            +     "padding-top:68px;"
+            +     "padding-bottom:16px;"
+            +     "padding-left:max(2em,5vw);"
+            +     "padding-right:max(2em,5vw);}"
+            +   "#hashiru-edit-btn,#hashiru-done{top:12px;}"
+            +   "#hashiru-sb-track{top:8px;}"
+            +   "#hashiru-editor{padding-top:68px;"
+            +     "left:50%;right:auto;width:90%;max-width:900px;"
             +     "transform:translateX(-50%);}"
             + "}"
             + topFadeRule

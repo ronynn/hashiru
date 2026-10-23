@@ -272,8 +272,8 @@ public class WebViewActivity extends Activity {
     }
 
     /**
-     * Drop any subresource request originating outside of the local server
-     * when in reader mode. Reader content is not supposed to reach the net.
+     * Drops every subresource request that does not target the local server
+     * while reading — markdown/txt/org/csv content cannot reach the internet.
      */
     private WebResourceResponse blockExternalForReader(String url) {
         if (!isReader || url == null) return null;
@@ -284,7 +284,6 @@ public class WebViewActivity extends Activity {
             return null;
         String host = u.getHost();
         if ("127.0.0.1".equals(host) || "localhost".equals(host)) return null;
-        // Empty response = dropped. Equivalent to a broken image / failed XHR.
         return new WebResourceResponse("text/plain", "utf-8",
                 new ByteArrayInputStream(new byte[0]));
     }
@@ -392,7 +391,7 @@ public class WebViewActivity extends Activity {
         return Math.round(px / density);
     }
 
-    /** Reads navigation bar height from the framework resource — works pre-layout. */
+    /** Framework resource — valid before layout, works pre-API 20. */
     private int getNavigationBarHeight() {
         if (navBarHeight >= 0) return navBarHeight;
         try {
@@ -457,8 +456,9 @@ public class WebViewActivity extends Activity {
     public void onConfigurationChanged(Configuration cfg) {
         super.onConfigurationChanged(cfg);
         applyOrientation(cfg.orientation);
-        // No reload — @media (orientation:landscape) handles the layout
-        // (padding, side bars, fade hiding) purely in CSS.
+        // Bars flip between transparent (portrait, content under them) and
+        // opaque theme-color (landscape, content inside). CSS media query
+        // handles body padding + fade hiding — no reload needed.
     }
 
     private void reloadCurrentFile() {
@@ -983,8 +983,10 @@ public class WebViewActivity extends Activity {
         Window win = getWindow();
         View decor = win.getDecorView();
         WindowManager.LayoutParams lp = win.getAttributes();
+        boolean portrait = orientation == Configuration.ORIENTATION_PORTRAIT;
 
-        if (!isReader && orientation == Configuration.ORIENTATION_LANDSCAPE) {
+        if (!isReader && !portrait) {
+            // HTML landscape → immersive fullscreen (unchanged).
             decor.setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                             | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
@@ -1003,18 +1005,30 @@ public class WebViewActivity extends Activity {
         }
 
         if (isReader) {
-            // Transparent status bar AND transparent nav bar — content flows
-            // under both. HTML top/bottom padding keeps text clear of chrome;
-            // CSS overlay handles the top/bottom fade in portrait.
             win.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
-            win.setStatusBarColor(Color.TRANSPARENT);
-            win.setNavigationBarColor(Color.TRANSPARENT);
-            if (Build.VERSION.SDK_INT >= 28)
-                win.setNavigationBarDividerColor(Color.TRANSPARENT);
+            int themeBg = ReaderRenderer.backgroundArgb(settings.theme);
+            int flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
 
-            int flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
+            if (portrait) {
+                // Portrait: transparent bars, content flows under them.
+                // Fade overlays in the HTML give the top/bottom fade-out.
+                win.setStatusBarColor(Color.TRANSPARENT);
+                win.setNavigationBarColor(Color.TRANSPARENT);
+                if (Build.VERSION.SDK_INT >= 28)
+                    win.setNavigationBarDividerColor(Color.TRANSPARENT);
+                flags |= View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
+            } else {
+                // Landscape: opaque theme-colored bars. Content sits entirely
+                // inside them: no black band under the status bar, edit button
+                // always reachable, reading column never shifts when bars
+                // appear/disappear. Fades are CSS-hidden in landscape.
+                win.setStatusBarColor(themeBg);
+                win.setNavigationBarColor(themeBg);
+                if (Build.VERSION.SDK_INT >= 28)
+                    win.setNavigationBarDividerColor(themeBg);
+            }
+
             if (settings.isLightTheme()) {
                 if (Build.VERSION.SDK_INT >= 23)
                     flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
@@ -1027,7 +1041,7 @@ public class WebViewActivity extends Activity {
                 lp.layoutInDisplayCutoutMode =
                         WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
         } else {
-            // HTML portrait: opaque chrome.
+            // HTML portrait: opaque chrome (unchanged).
             win.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
             win.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
             win.setStatusBarColor(BAR_COLOR_HTML);
