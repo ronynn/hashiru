@@ -9,8 +9,6 @@ New: Now edit your text and markdown files seemlessly too, and customize its loo
   <img src="fastlane/metadata/android/en-US/images/icon.png" alt="App Icon" width="45%">
 </div>
 
-
-
 ## Features
 
 Each opened HTML file spawns an embedded NanoHTTPD instance on an ephemeral port. The WebView requests the document and all relative assets over http://127.0.0.1, which bypasses the file:// origin restrictions that break relative paths and cross-origin fetches in stock WebView. Users grant a single folder via the system folder picker, and persistable URI permission is requested so the grant survives reboots. 
