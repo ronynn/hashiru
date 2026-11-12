@@ -16,15 +16,16 @@ import android.util.Log;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.FileDescriptor;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -44,7 +45,7 @@ public class LocalFileServer extends NanoHTTPD {
     private Context appContext;
     private String rootDocId;
 
-    private String musicHtmlCache;
+    private final Map<String, String> assetCache = new ConcurrentHashMap<>();
     private final Map<Long, byte[]> coverCache = new ConcurrentHashMap<>();
     private final Map<Long, String> mimeCache = new ConcurrentHashMap<>();
 
@@ -53,9 +54,9 @@ public class LocalFileServer extends NanoHTTPD {
 
     private static final String PLACEHOLDER_SVG =
             "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' width='100' height='100'>"
-          + "<rect width='100' height='100' fill='#2a2a2a'/>"
-          + "<text x='50' y='68' font-size='52' text-anchor='middle' fill='#666' "
-          + "font-family='sans-serif'>\u266A</text></svg>";
+          + "<rect width='100' height='100' fill='#1a1a1a'/>"
+          + "<text x='50' y='68' font-size='52' text-anchor='middle' fill='#555' "
+          + "font-family='monospace'>\u266A</text></svg>";
 
     private LocalFileServer() { super("127.0.0.1", PORT); }
 
@@ -128,7 +129,9 @@ public class LocalFileServer extends NanoHTTPD {
             return plain(Response.Status.SERVICE_UNAVAILABLE, "Music not ready");
 
         if (uri.equals("_music") || uri.equals("_music/") || uri.equals("_music/index.html"))
-            return serveMusicIndex();
+            return serveAsset("music.html", "text/html");
+        if (uri.equals("_music/music.css"))
+            return serveAsset("music.css", "text/css");
         if (uri.equals("_music/lib"))
             return serveMusicLib();
         if (uri.startsWith("_music/stream/"))
@@ -137,21 +140,25 @@ public class LocalFileServer extends NanoHTTPD {
             return serveMusicCover(uri.substring("_music/cover/".length()));
         if (uri.startsWith("_music/fav"))
             return serveMusicFav(session);
+        if (uri.startsWith("_music/metadata"))
+            return serveMusicMetadata(session);
 
         return plain(Response.Status.NOT_FOUND, "Music route not found");
     }
 
-    private Response serveMusicIndex() {
-        if (musicHtmlCache == null) {
+    private Response serveAsset(String assetPath, String mime) {
+        String content = assetCache.get(assetPath);
+        if (content == null) {
             try {
-                InputStream in = appContext.getAssets().open("music.html");
-                musicHtmlCache = readAll(in);
+                InputStream in = appContext.getAssets().open(assetPath);
+                content = readAll(in);
+                assetCache.put(assetPath, content);
             } catch (IOException e) {
-                return plain(Response.Status.INTERNAL_ERROR, "music.html missing in assets");
+                return plain(Response.Status.NOT_FOUND, "asset missing: " + assetPath);
             }
         }
         Response r = newFixedLengthResponse(
-                Response.Status.OK, "text/html; charset=utf-8", musicHtmlCache);
+                Response.Status.OK, mime + "; charset=utf-8", content);
         r.addHeader("Cache-Control", "no-store");
         return r;
     }
@@ -184,7 +191,9 @@ public class LocalFileServer extends NanoHTTPD {
                     MediaStore.Audio.Media.ARTIST,
                     MediaStore.Audio.Media.ALBUM,
                     MediaStore.Audio.Media.DURATION,
-                    MediaStore.Audio.Media.DATA
+                    MediaStore.Audio.Media.DATA,
+                    MediaStore.Audio.Media.TRACK,
+                    MediaStore.Audio.Media.MIME_TYPE
             };
             String sel = MediaStore.Audio.Media.IS_MUSIC + " != 0";
             String sort = MediaStore.Audio.Media.TITLE + " COLLATE NOCASE ASC";
@@ -193,26 +202,39 @@ public class LocalFileServer extends NanoHTTPD {
             try {
                 c = resolver.query(uri, proj, sel, null, sort);
                 if (c != null) {
-                    int idxId = c.getColumnIndexOrThrow(MediaStore.Audio.Media._ID);
-                    int idxTitle = c.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE);
+                    int idxId     = c.getColumnIndexOrThrow(MediaStore.Audio.Media._ID);
+                    int idxTitle  = c.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE);
                     int idxArtist = c.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST);
-                    int idxAlbum = c.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM);
-                    int idxDur = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION);
-                    int idxData = c.getColumnIndex(MediaStore.Audio.Media.DATA);
+                    int idxAlbum  = c.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM);
+                    int idxDur    = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION);
+                    int idxData   = c.getColumnIndex(MediaStore.Audio.Media.DATA);
+                    int idxTrack  = c.getColumnIndex(MediaStore.Audio.Media.TRACK);
                     int idxBucket = c.getColumnIndex("bucket_display_name");
 
                     boolean first = true;
                     while (c.moveToNext()) {
                         long id = c.getLong(idxId);
-                        String title = c.getString(idxTitle);
+                        String title  = c.getString(idxTitle);
                         String artist = c.getString(idxArtist);
-                        String album = c.getString(idxAlbum);
+                        String album  = c.getString(idxAlbum);
                         long duration = c.getLong(idxDur);
+                        int track = (idxTrack >= 0 && !c.isNull(idxTrack)) ? c.getInt(idxTrack) : 0;
+
+                        // Overrides take precedence
+                        String oTitle  = prefs.getString("meta_" + id + "_title",  null);
+                        String oArtist = prefs.getString("meta_" + id + "_artist", null);
+                        String oAlbum  = prefs.getString("meta_" + id + "_album",  null);
+                        String oTrack  = prefs.getString("meta_" + id + "_track",  null);
+                        if (oTitle != null)  title  = oTitle;
+                        if (oArtist != null) artist = oArtist;
+                        if (oAlbum != null)  album  = oAlbum;
+                        if (oTrack != null) {
+                            try { track = Integer.parseInt(oTrack); } catch (Exception ignored) {}
+                        }
 
                         String folder = null;
-                        if (idxBucket >= 0 && !c.isNull(idxBucket)) {
+                        if (idxBucket >= 0 && !c.isNull(idxBucket))
                             folder = c.getString(idxBucket);
-                        }
                         if (folder == null || folder.isEmpty()) {
                             String path = idxData >= 0 ? c.getString(idxData) : null;
                             if (path != null) {
@@ -235,6 +257,7 @@ public class LocalFileServer extends NanoHTTPD {
                           .append(",\"artist\":").append(jsonStr(artist))
                           .append(",\"album\":").append(jsonStr(album))
                           .append(",\"folder\":").append(jsonStr(folder))
+                          .append(",\"track\":").append(track)
                           .append(",\"duration\":").append(duration)
                           .append(",\"isFav\":").append(isFav)
                           .append('}');
@@ -274,18 +297,13 @@ public class LocalFileServer extends NanoHTTPD {
                     if (m != null && !m.isEmpty()) mime = m;
                 }
             } catch (Exception ignored) {
-            } finally {
-                if (c != null) c.close();
-            }
+            } finally { if (c != null) c.close(); }
             mimeCache.put(id, mime);
         }
 
         ParcelFileDescriptor pfd = null;
-        try {
-            pfd = resolver.openFileDescriptor(audioUri, "r");
-        } catch (Exception e) {
-            return plain(Response.Status.NOT_FOUND, "cannot open");
-        }
+        try { pfd = resolver.openFileDescriptor(audioUri, "r"); }
+        catch (Exception e) { return plain(Response.Status.NOT_FOUND, "cannot open"); }
         if (pfd == null) return plain(Response.Status.NOT_FOUND, "cannot open");
 
         long fileLength = pfd.getStatSize();
@@ -322,7 +340,6 @@ public class LocalFileServer extends NanoHTTPD {
         }
 
         long contentLength = end - start + 1;
-
         try {
             FileDescriptor fd = pfd.getFileDescriptor();
             FileInputStream fis = new FileInputStream(fd);
@@ -357,6 +374,24 @@ public class LocalFileServer extends NanoHTTPD {
         try { id = Long.parseLong(idStr); }
         catch (Exception e) { return serveSvg(); }
 
+        // 1. User-picked cover (filesDir/covers/<id>.*)
+        File coverDir = new File(appContext.getFilesDir(), "covers");
+        File[] matches = coverDir.listFiles((d, name) -> name.startsWith(id + "."));
+        if (matches != null && matches.length > 0) {
+            File f = matches[0];
+            String mime = f.getName().endsWith(".png") ? "image/png"
+                        : f.getName().endsWith(".webp") ? "image/webp"
+                        : f.getName().endsWith(".gif") ? "image/gif"
+                        : "image/jpeg";
+            try {
+                InputStream in = new FileInputStream(f);
+                Response r = newFixedLengthResponse(Response.Status.OK, mime, in, f.length());
+                r.addHeader("Cache-Control", "no-cache");
+                return r;
+            } catch (IOException e) { /* fall through */ }
+        }
+
+        // 2. Memory cache
         byte[] cached = coverCache.get(id);
         if (cached != null) {
             Response r = newFixedLengthResponse(Response.Status.OK,
@@ -365,6 +400,7 @@ public class LocalFileServer extends NanoHTTPD {
             return r;
         }
 
+        // 3. Embedded picture
         Uri audioUri = ContentUris.withAppendedId(
                 MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id);
         MediaMetadataRetriever mmr = new MediaMetadataRetriever();
@@ -407,8 +443,288 @@ public class LocalFileServer extends NanoHTTPD {
         prefs.edit().putBoolean("fav_" + id, on).apply();
 
         String body = "{\"ok\":true,\"id\":" + id + ",\"isFav\":" + on + "}";
-        return newFixedLengthResponse(
-                Response.Status.OK, "application/json", body);
+        return newFixedLengthResponse(Response.Status.OK, "application/json", body);
+    }
+
+    private Response serveMusicMetadata(IHTTPSession session) {
+        Map<String, String> parms = session.getParms();
+        String idStr = parms.get("id");
+        if (idStr == null) return plain(Response.Status.BAD_REQUEST, "missing id");
+        long id;
+        try { id = Long.parseLong(idStr); }
+        catch (Exception e) { return plain(Response.Status.BAD_REQUEST, "bad id"); }
+
+        boolean isUpdate = parms.containsKey("title")
+                        || parms.containsKey("artist")
+                        || parms.containsKey("album")
+                        || parms.containsKey("track");
+
+        if (isUpdate) {
+            boolean ok = saveMetadata(id,
+                    parms.get("title"), parms.get("artist"),
+                    parms.get("album"), parms.get("track"));
+            return newFixedLengthResponse(Response.Status.OK, "application/json",
+                    "{\"ok\":" + ok + ",\"id\":" + id + "}");
+        }
+
+        SharedPreferences prefs = appContext.getSharedPreferences(MUSIC_PREFS, MODE_PRIVATE);
+        String title  = prefs.getString("meta_" + id + "_title",  null);
+        String artist = prefs.getString("meta_" + id + "_artist", null);
+        String album  = prefs.getString("meta_" + id + "_album",  null);
+        String track  = prefs.getString("meta_" + id + "_track",  null);
+
+        if (title == null || artist == null || album == null || track == null) {
+            Uri audioUri = ContentUris.withAppendedId(
+                    MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id);
+            Cursor c = null;
+            try {
+                c = resolver.query(audioUri,
+                        new String[]{MediaStore.Audio.Media.TITLE,
+                                     MediaStore.Audio.Media.ARTIST,
+                                     MediaStore.Audio.Media.ALBUM,
+                                     MediaStore.Audio.Media.TRACK},
+                        null, null, null);
+                if (c != null && c.moveToFirst()) {
+                    if (title == null)  title = c.getString(0);
+                    if (artist == null) artist = c.getString(1);
+                    if (album == null)  album = c.getString(2);
+                    if (track == null)  track = String.valueOf(c.getInt(3));
+                }
+            } catch (Exception ignored) {
+            } finally { if (c != null) c.close(); }
+        }
+
+        StringBuilder sb = new StringBuilder("{");
+        sb.append("\"title\":").append(jsonStr(title)).append(',');
+        sb.append("\"artist\":").append(jsonStr(artist)).append(',');
+        sb.append("\"album\":").append(jsonStr(album)).append(',');
+        sb.append("\"track\":").append(jsonStr(track));
+        sb.append("}");
+        return newFixedLengthResponse(Response.Status.OK, "application/json", sb.toString());
+    }
+
+    private boolean saveMetadata(long id, String title, String artist, String album, String track) {
+        SharedPreferences prefs = appContext.getSharedPreferences(MUSIC_PREFS, MODE_PRIVATE);
+        SharedPreferences.Editor e = prefs.edit();
+        if (title != null)  e.putString("meta_" + id + "_title",  title);
+        if (artist != null) e.putString("meta_" + id + "_artist", artist);
+        if (album != null)  e.putString("meta_" + id + "_album",  album);
+        if (track != null)  e.putString("meta_" + id + "_track",  track);
+        e.apply();
+
+        Uri audioUri = ContentUris.withAppendedId(
+                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id);
+        android.content.ContentValues cv = new android.content.ContentValues();
+        if (title != null)  cv.put(MediaStore.Audio.Media.TITLE,  title);
+        if (artist != null) cv.put(MediaStore.Audio.Media.ARTIST, artist);
+        if (album != null)  cv.put(MediaStore.Audio.Media.ALBUM,  album);
+        if (track != null) {
+            try { cv.put(MediaStore.Audio.Media.TRACK, Integer.parseInt(track)); }
+            catch (Exception ignored) {}
+        }
+        if (cv.size() > 0) {
+            try { resolver.update(audioUri, cv, null, null); }
+            catch (Exception ex) { Log.w(TAG, "MediaStore update failed", ex); }
+        }
+
+        String mime = getAudioMimeFor(id);
+        if (mime != null && (mime.contains("mpeg") || mime.contains("mp3"))) {
+            try { writeId3Tags(audioUri, title, artist, album, track); }
+            catch (Exception ex) { Log.w(TAG, "ID3 write failed", ex); }
+        }
+        return true;
+    }
+
+    private String getAudioMimeFor(long id) {
+        Uri audioUri = ContentUris.withAppendedId(
+                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id);
+        Cursor c = null;
+        try {
+            c = resolver.query(audioUri,
+                    new String[]{MediaStore.Audio.Media.MIME_TYPE}, null, null, null);
+            if (c != null && c.moveToFirst()) return c.getString(0);
+        } catch (Exception ignored) {
+        } finally { if (c != null) c.close(); }
+        return null;
+    }
+
+    // ==================================================================
+    // ID3v2.4 writing
+    // ==================================================================
+
+    private void writeId3Tags(Uri audioUri, String title, String artist,
+                              String album, String track) throws IOException {
+        byte[] fileBytes = readBytes(resolver.openInputStream(audioUri));
+        if (fileBytes == null) throw new IOException("read failed");
+
+        int audioStart = findId3TagEnd(fileBytes);
+        byte[] existingCover = findApicData(fileBytes, 10, audioStart);
+        byte[] newTag = buildId3Tag(title, artist, album, track, existingCover, "image/jpeg");
+
+        try (java.io.OutputStream out = resolver.openOutputStream(audioUri, "rwt")) {
+            if (out == null) throw new IOException("write failed");
+            out.write(newTag);
+            out.write(fileBytes, audioStart, fileBytes.length - audioStart);
+        }
+    }
+
+    public static void embedCoverInMp3(Context ctx, Uri audioUri,
+                                       byte[] coverData, String coverMime) {
+        try {
+            ContentResolver cr = ctx.getContentResolver();
+            byte[] fileBytes = readBytes(cr.openInputStream(audioUri));
+            if (fileBytes == null) return;
+
+            int audioStart = findId3TagEnd(fileBytes);
+            byte[] existingCover = findApicData(fileBytes, 10, audioStart);
+            byte[] finalCover = coverData != null ? coverData : existingCover;
+
+            String existingTitle  = findTextFrame(fileBytes, 10, audioStart, "TIT2");
+            String existingArtist = findTextFrame(fileBytes, 10, audioStart, "TPE1");
+            String existingAlbum  = findTextFrame(fileBytes, 10, audioStart, "TALB");
+            String existingTrack  = findTextFrame(fileBytes, 10, audioStart, "TRCK");
+
+            String mime = coverMime != null ? coverMime : "image/jpeg";
+            byte[] newTag = buildId3Tag(existingTitle, existingArtist, existingAlbum,
+                    existingTrack, finalCover, mime);
+
+            try (java.io.OutputStream out = cr.openOutputStream(audioUri, "rwt")) {
+                if (out == null) return;
+                out.write(newTag);
+                out.write(fileBytes, audioStart, fileBytes.length - audioStart);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "embedCoverInMp3 failed", e);
+        }
+    }
+
+    private static byte[] readBytes(InputStream in) throws IOException {
+        if (in == null) return null;
+        try {
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
+            return bos.toByteArray();
+        } finally { try { in.close(); } catch (Exception ignored) {} }
+    }
+
+    private static int findId3TagEnd(byte[] data) {
+        if (data.length < 10) return 0;
+        if (data[0] != 'I' || data[1] != 'D' || data[2] != '3') return 0;
+        int size = ((data[6] & 0x7f) << 21) | ((data[7] & 0x7f) << 14)
+                 | ((data[8] & 0x7f) << 7)  | (data[9] & 0x7f);
+        int end = 10 + size;
+        if ((data[5] & 0x10) != 0) end += 10;
+        return Math.min(end, data.length);
+    }
+
+    private static String findTextFrame(byte[] data, int start, int end, String frameId) {
+        int pos = start;
+        while (pos + 10 <= end) {
+            String id = new String(data, pos, 4, StandardCharsets.ISO_8859_1);
+            if (id.equals("\0\0\0\0")) break;
+            int size = ((data[pos+4] & 0x7f) << 21) | ((data[pos+5] & 0x7f) << 14)
+                     | ((data[pos+6] & 0x7f) << 7)  | (data[pos+7] & 0x7f);
+            if (id.equals(frameId) && size > 1) {
+                int enc = data[pos + 10];
+                if (enc == 3) return new String(data, pos + 11, size - 1, StandardCharsets.UTF_8);
+                return new String(data, pos + 11, size - 1, StandardCharsets.ISO_8859_1);
+            }
+            pos += 10 + size;
+        }
+        return null;
+    }
+
+    private static byte[] findApicData(byte[] data, int start, int end) {
+        int pos = start;
+        while (pos + 10 <= end) {
+            String id = new String(data, pos, 4, StandardCharsets.ISO_8859_1);
+            if (id.equals("\0\0\0\0")) break;
+            int size = ((data[pos+4] & 0x7f) << 21) | ((data[pos+5] & 0x7f) << 14)
+                     | ((data[pos+6] & 0x7f) << 7)  | (data[pos+7] & 0x7f);
+            if (id.equals("APIC")) {
+                int fpos = pos + 10;
+                int fEnd = fpos + size;
+                if (fEnd > data.length) return null;
+                int enc = data[fpos];
+                int p = fpos + 1;
+                while (p < fEnd && data[p] != 0) p++;
+                p++;
+                p++;
+                if (enc == 1 || enc == 2) {
+                    if (p + 1 < fEnd) p += 2;
+                    while (p + 1 < fEnd && !(data[p] == 0 && data[p+1] == 0)) p += 2;
+                    p += 2;
+                } else {
+                    while (p < fEnd && data[p] != 0) p++;
+                    p++;
+                }
+                int len = fEnd - p;
+                if (len > 0) {
+                    byte[] img = new byte[len];
+                    System.arraycopy(data, p, img, 0, len);
+                    return img;
+                }
+                return null;
+            }
+            pos += 10 + size;
+        }
+        return null;
+    }
+
+    private static byte[] buildId3Tag(String title, String artist, String album,
+                                       String track, byte[] cover, String coverMime)
+            throws IOException {
+        ByteArrayOutputStream buf = new ByteArrayOutputStream();
+        buf.write(new byte[]{'I','D','3', 4, 0, 0, 0,0,0,0});
+
+        if (title != null && !title.isEmpty())   writeTextFrame(buf, "TIT2", title);
+        if (artist != null && !artist.isEmpty()) writeTextFrame(buf, "TPE1", artist);
+        if (album != null && !album.isEmpty())   writeTextFrame(buf, "TALB", album);
+        if (track != null && !track.isEmpty())   writeTextFrame(buf, "TRCK", track);
+        if (cover != null && cover.length > 0)
+            writeApicFrame(buf, cover, coverMime != null ? coverMime : "image/jpeg");
+
+        byte[] tag = buf.toByteArray();
+        int size = tag.length - 10;
+        tag[6] = (byte)((size >> 21) & 0x7f);
+        tag[7] = (byte)((size >> 14) & 0x7f);
+        tag[8] = (byte)((size >> 7)  & 0x7f);
+        tag[9] = (byte)( size        & 0x7f);
+        return tag;
+    }
+
+    private static void writeTextFrame(ByteArrayOutputStream buf, String id, String text)
+            throws IOException {
+        byte[] textBytes = text.getBytes(StandardCharsets.UTF_8);
+        int size = 1 + textBytes.length;
+        buf.write(id.getBytes(StandardCharsets.ISO_8859_1));
+        buf.write((size >> 21) & 0x7f);
+        buf.write((size >> 14) & 0x7f);
+        buf.write((size >> 7)  & 0x7f);
+        buf.write( size        & 0x7f);
+        buf.write(0); buf.write(0);
+        buf.write(3);
+        buf.write(textBytes);
+    }
+
+    private static void writeApicFrame(ByteArrayOutputStream buf, byte[] image, String mime)
+            throws IOException {
+        byte[] mimeBytes = mime.getBytes(StandardCharsets.ISO_8859_1);
+        int size = 1 + mimeBytes.length + 1 + 1 + 1 + image.length;
+        buf.write("APIC".getBytes(StandardCharsets.ISO_8859_1));
+        buf.write((size >> 21) & 0x7f);
+        buf.write((size >> 14) & 0x7f);
+        buf.write((size >> 7)  & 0x7f);
+        buf.write( size        & 0x7f);
+        buf.write(0); buf.write(0);
+        buf.write(0);
+        buf.write(mimeBytes);
+        buf.write(0);
+        buf.write(3);
+        buf.write(0);
+        buf.write(image);
     }
 
     // ==================================================================
@@ -445,12 +761,10 @@ public class LocalFileServer extends NanoHTTPD {
         return null;
     }
 
-    /** Wraps a stream and closes an associated resource (like a PFD) on close. */
     private static final class AutoCloseInputStream extends FilterInputStream {
         private final java.io.Closeable resource;
         AutoCloseInputStream(InputStream in, java.io.Closeable resource) {
-            super(in);
-            this.resource = resource;
+            super(in); this.resource = resource;
         }
         @Override public void close() throws IOException {
             try { super.close(); }
@@ -462,13 +776,9 @@ public class LocalFileServer extends NanoHTTPD {
         }
     }
 
-    /** Limits reads to a fixed byte count. */
     private static final class BoundedInputStream extends FilterInputStream {
         private long remaining;
-        BoundedInputStream(InputStream in, long limit) {
-            super(in);
-            this.remaining = limit;
-        }
+        BoundedInputStream(InputStream in, long limit) { super(in); this.remaining = limit; }
         @Override public int read() throws IOException {
             if (remaining <= 0) return -1;
             int b = super.read();
@@ -484,7 +794,7 @@ public class LocalFileServer extends NanoHTTPD {
         }
     }
 
-    // ---- existing reader helpers (unchanged) ----
+    // ---- reader helpers (unchanged) ----
 
     private Response serveDirOrIndex(String dirDocId, String pathForError,
                                      int sbhDp, int nbhDp, boolean blur,
@@ -505,9 +815,7 @@ public class LocalFileServer extends NanoHTTPD {
         try {
             while (c.moveToNext())
                 if (name.equals(c.getString(1))) return c.getString(0);
-        } finally {
-            c.close();
-        }
+        } finally { c.close(); }
         return null;
     }
 
@@ -530,9 +838,7 @@ public class LocalFileServer extends NanoHTTPD {
                     name = c.getString(1);
                     try { lastModified = c.getLong(2); } catch (Exception ignored) {}
                 }
-            } finally {
-                c.close();
-            }
+            } finally { c.close(); }
         }
 
         if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime))
@@ -547,8 +853,7 @@ public class LocalFileServer extends NanoHTTPD {
                 String raw = readAll(in);
                 ReaderSettings settings = appContext != null
                         ? ReaderSettings.load(appContext) : new ReaderSettings();
-                String html = ReaderRenderer.render(
-                        ext, raw, settings, sbhDp, nbhDp, blur);
+                String html = ReaderRenderer.render(ext, raw, settings, sbhDp, nbhDp, blur);
                 Response r = newFixedLengthResponse(
                         Response.Status.OK, "text/html; charset=utf-8", html);
                 r.addHeader("Cache-Control", "no-store");

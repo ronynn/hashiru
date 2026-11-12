@@ -1,19 +1,26 @@
 package io.github.ronynn.hashiru;
 
 import android.app.Activity;
+import android.app.WallpaperManager;
+import android.app.WallpaperColors;
+import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
-import android.content.ComponentName;
+import android.content.ContentUris;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.database.Cursor;
+import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.MediaStore;
 import android.util.Log;
 import android.view.View;
+import android.view.Window;
+import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
@@ -21,37 +28,37 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 
 public class MusicActivity extends Activity {
 
     private static final String TAG = "MusicActivity";
     private static final int REQ_AUDIO_PERM = 100;
+    private static final int REQ_COVER_PICK = 200;
 
     private WebView web;
     private LocalFileServer server;
     private long pendingPlayId = -1;
+    private long pendingCoverSongId = -1;
     private boolean permissionRequested = false;
 
     private final BroadcastReceiver mediaCmdReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context ctx, Intent intent) {
             String cmd = intent.getStringExtra("cmd");
             if (cmd == null) return;
-            if ("stop".equals(cmd)) {
-                evalJs("window.__hashiruMusic && window.__hashiruMusic.cmd('stop')");
-                // Don't finish — user might have just paused via service.
-                // If we got 'stop' from onTaskRemoved, the activity is being
-                // destroyed anyway and onDestroy will clean up.
-            } else {
-                evalJs("window.__hashiruMusic && window.__hashiruMusic.cmd(" + jsStr(cmd) + ")");
-            }
+            evalJs("window.__hashiruMusic && window.__hashiruMusic.cmd(" + jsStr(cmd) + ")");
         }
     };
 
-    @Override
-    protected void onCreate(Bundle b) {
+    @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         setContentView(R.layout.activity_music);
+        applySystemBars(getResources().getConfiguration().orientation);
 
         web = findViewById(R.id.web);
         web.setBackgroundColor(0xFF111111);
@@ -96,8 +103,42 @@ public class MusicActivity extends Activity {
         web.loadUrl("http://127.0.0.1:" + server.getListeningPort() + "/_music/");
     }
 
-    @Override
-    protected void onNewIntent(Intent intent) {
+    @Override public void onConfigurationChanged(Configuration cfg) {
+        super.onConfigurationChanged(cfg);
+        applySystemBars(cfg.orientation);
+    }
+
+    private void applySystemBars(int orientation) {
+        Window win = getWindow();
+        View decor = win.getDecorView();
+        boolean portrait = orientation == Configuration.ORIENTATION_PORTRAIT;
+        int bg = 0xFF111111;
+
+        win.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+
+        if (portrait) {
+            win.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
+            win.setStatusBarColor(bg);
+            win.setNavigationBarColor(bg);
+            decor.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+            if (Build.VERSION.SDK_INT >= 29) {
+                win.setStatusBarContrastEnforced(false);
+                win.setNavigationBarContrastEnforced(false);
+            }
+        } else {
+            win.setStatusBarColor(Color.TRANSPARENT);
+            win.setNavigationBarColor(Color.TRANSPARENT);
+            decor.setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_FULLSCREEN);
+        }
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
         handleAudioIntent(intent);
@@ -114,7 +155,6 @@ public class MusicActivity extends Activity {
         if (uri == null) return;
         long id = resolveMediaStoreId(uri);
         if (id > 0) pendingPlayId = id;
-        else Log.w(TAG, "unrecognized audio URI: " + uri);
     }
 
     private long resolveMediaStoreId(Uri uri) {
@@ -165,8 +205,7 @@ public class MusicActivity extends Activity {
             requestPermissions(perms.toArray(new String[0]), REQ_AUDIO_PERM);
     }
 
-    @Override
-    public void onRequestPermissionsResult(int req, String[] perms, int[] results) {
+    @Override public void onRequestPermissionsResult(int req, String[] perms, int[] results) {
         super.onRequestPermissionsResult(req, perms, results);
         if (req == REQ_AUDIO_PERM) {
             evalJs("window.__hashiruMusic && window.__hashiruMusic.rescan && window.__hashiruMusic.rescan()");
@@ -195,8 +234,80 @@ public class MusicActivity extends Activity {
         return sb.toString();
     }
 
-    @Override
-    protected void onDestroy() {
+    // Saves the picked cover to app-private storage AND (for MP3) embeds it as
+    // an APIC frame in the actual file via LocalFileServer.embedCoverInMp3().
+    private void saveCoverFor(long songId, Uri src) {
+        File dir = new File(getFilesDir(), "covers");
+        if (!dir.exists()) dir.mkdirs();
+        File[] old = dir.listFiles((d, name) -> name.startsWith(songId + "."));
+        if (old != null) for (File f : old) f.delete();
+
+        String ext = "jpg";
+        String mime = getContentResolver().getType(src);
+        if (mime != null) {
+            if (mime.contains("png")) ext = "png";
+            else if (mime.contains("webp")) ext = "webp";
+            else if (mime.contains("gif")) ext = "gif";
+        }
+        File out = new File(dir, songId + "." + ext);
+
+        byte[] coverBytes = null;
+        try (InputStream in = getContentResolver().openInputStream(src);
+             FileOutputStream os = new FileOutputStream(out)) {
+            if (in == null) return;
+            ByteArrayOutputStream buf = new ByteArrayOutputStream();
+            byte[] b = new byte[8192];
+            int n;
+            while ((n = in.read(b)) > 0) { os.write(b, 0, n); buf.write(b, 0, n); }
+            coverBytes = buf.toByteArray();
+        } catch (Exception e) {
+            Log.w(TAG, "save cover failed", e);
+            return;
+        }
+
+        // Embed into MP3 if applicable
+        String audioMime = getAudioMime(songId);
+        if (audioMime != null && (audioMime.contains("mpeg") || audioMime.contains("mp3"))) {
+            try {
+                Uri audioUri = ContentUris.withAppendedId(
+                        MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, songId);
+                LocalFileServer.embedCoverInMp3(this, audioUri, coverBytes,
+                        "image/" + ("png".equals(ext) ? "png" : "jpeg"));
+            } catch (Exception e) {
+                Log.w(TAG, "MP3 embed failed", e);
+            }
+        }
+    }
+
+    private String getAudioMime(long id) {
+        Uri uri = ContentUris.withAppendedId(
+                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id);
+        Cursor c = null;
+        try {
+            c = getContentResolver().query(uri,
+                    new String[]{MediaStore.Audio.Media.MIME_TYPE}, null, null, null);
+            if (c != null && c.moveToFirst()) return c.getString(0);
+        } catch (Exception ignored) {
+        } finally { if (c != null) c.close(); }
+        return null;
+    }
+
+    @Override protected void onActivityResult(int req, int res, Intent data) {
+        super.onActivityResult(req, res, data);
+        if (req == REQ_COVER_PICK) {
+            if (res == RESULT_OK && data != null && data.getData() != null
+                    && pendingCoverSongId > 0) {
+                saveCoverFor(pendingCoverSongId, data.getData());
+                evalJs("window.__hashiruMusic && window.__hashiruMusic.refreshCover && "
+                        + "window.__hashiruMusic.refreshCover(" + pendingCoverSongId + ")");
+                evalJs("window.__hashiruMusic && window.__hashiruMusic.refreshNotification && "
+                        + "window.__hashiruMusic.refreshNotification()");
+            }
+            pendingCoverSongId = -1;
+        }
+    }
+
+    @Override protected void onDestroy() {
         try { unregisterReceiver(mediaCmdReceiver); } catch (Exception ignored) {}
         if (isFinishing()) {
             evalJs("window.__hashiruMusic && window.__hashiruMusic.cmd('stop')");
@@ -210,37 +321,27 @@ public class MusicActivity extends Activity {
         super.onDestroy();
     }
 
-    // ==================================================================
-    // JS Bridge
-    // ==================================================================
-
     public class MusicBridge {
 
-        @JavascriptInterface
-        public long consumePendingPlayId() {
-            long id = pendingPlayId;
-            pendingPlayId = -1;
-            return id;
+        @JavascriptInterface public long consumePendingPlayId() {
+            long id = pendingPlayId; pendingPlayId = -1; return id;
         }
 
-        @JavascriptInterface
-        public void onPlay(final String title, final String artist) {
+        @JavascriptInterface public void onPlay(final String title, final String artist, final long songId) {
             runOnUiThread(() -> {
                 try {
                     Intent i = new Intent(MusicActivity.this, MusicPlaybackService.class);
                     i.setAction(MusicPlaybackService.ACTION_START);
                     i.putExtra(MusicPlaybackService.EXTRA_TITLE, title);
                     i.putExtra(MusicPlaybackService.EXTRA_ARTIST, artist);
+                    i.putExtra(MusicPlaybackService.EXTRA_SONG_ID, songId);
                     if (Build.VERSION.SDK_INT >= 26) startForegroundService(i);
                     else startService(i);
-                } catch (Exception e) {
-                    Log.w(TAG, "service start failed", e);
-                }
+                } catch (Exception e) { Log.w(TAG, "service start failed", e); }
             });
         }
 
-        @JavascriptInterface
-        public void onPause() {
+        @JavascriptInterface public void onPause() {
             runOnUiThread(() -> {
                 try {
                     Intent i = new Intent(MusicActivity.this, MusicPlaybackService.class);
@@ -250,8 +351,7 @@ public class MusicActivity extends Activity {
             });
         }
 
-        @JavascriptInterface
-        public void onStop() {
+        @JavascriptInterface public void onStop() {
             runOnUiThread(() -> {
                 try {
                     Intent i = new Intent(MusicActivity.this, MusicPlaybackService.class);
@@ -259,6 +359,53 @@ public class MusicActivity extends Activity {
                     startService(i);
                 } catch (Exception ignored) {}
             });
+        }
+
+        /** Rebuilds notification without changing play state. */
+        @JavascriptInterface public void refreshNotification() {
+            runOnUiThread(() -> {
+                try {
+                    Intent i = new Intent(MusicActivity.this, MusicPlaybackService.class);
+                    i.setAction(MusicPlaybackService.ACTION_UPDATE_META);
+                    startService(i);
+                } catch (Exception ignored) {}
+            });
+        }
+
+        @JavascriptInterface public void pickCover(final long songId) {
+            runOnUiThread(() -> {
+                if (songId <= 0) return;
+                pendingCoverSongId = songId;
+                Intent picker = new Intent(Intent.ACTION_GET_CONTENT);
+                picker.setType("image/*");
+                picker.addCategory(Intent.CATEGORY_OPENABLE);
+                try { startActivityForResult(picker, REQ_COVER_PICK); }
+                catch (ActivityNotFoundException e) {
+                    Intent fallback = new Intent(Intent.ACTION_PICK,
+                            MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
+                    try { startActivityForResult(fallback, REQ_COVER_PICK); }
+                    catch (Exception e2) { pendingCoverSongId = -1; }
+                }
+            });
+        }
+
+        /** Wallpaper-derived theme; returns `{"hue": N, "dark": bool}` or `{"hue": -1}`. */
+        @JavascriptInterface public String getWallpaperTheme() {
+            if (Build.VERSION.SDK_INT >= 31) {
+                try {
+                    WallpaperManager wm = WallpaperManager.getInstance(MusicActivity.this);
+                    WallpaperColors wc = wm.getWallpaperColors(WallpaperManager.FLAG_SYSTEM);
+                    if (wc != null && wc.getPrimaryColor() != null) {
+                        float[] hsv = new float[3];
+                        Color.colorToHSV(wc.getPrimaryColor().toArgb(), hsv);
+                        boolean dark = hsv[2] < 0.55f;
+                        return "{\"hue\":" + hsv[0] + ",\"dark\":" + dark + "}";
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "wallpaper colors failed", e);
+                }
+            }
+            return "{\"hue\":-1}";
         }
     }
 }
