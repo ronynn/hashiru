@@ -51,6 +51,14 @@ public class MusicActivity extends Activity {
         @Override public void onReceive(Context ctx, Intent intent) {
             String cmd = intent.getStringExtra("cmd");
             if (cmd == null) return;
+
+            if ("seek".equals(cmd)) {
+                long pos = intent.getLongExtra("pos", -1);
+                if (pos >= 0) {
+                    evalJs("window.__hashiruMusic && window.__hashiruMusic.cmd('seek', " + pos + ")");
+                    return;
+                }
+            }
             evalJs("window.__hashiruMusic && window.__hashiruMusic.cmd(" + jsStr(cmd) + ")");
         }
     };
@@ -122,7 +130,6 @@ public class MusicActivity extends Activity {
         win.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
 
         if (portrait) {
-            // Edge-to-edge with transparent bars. Content gets padding in HTML.
             win.setStatusBarColor(Color.TRANSPARENT);
             win.setNavigationBarColor(Color.TRANSPARENT);
             if (Build.VERSION.SDK_INT >= 29) {
@@ -139,7 +146,6 @@ public class MusicActivity extends Activity {
             }
             decor.setSystemUiVisibility(flags);
         } else {
-            // Landscape — fullscreen immersive.
             win.setStatusBarColor(Color.TRANSPARENT);
             win.setNavigationBarColor(Color.TRANSPARENT);
             decor.setSystemUiVisibility(
@@ -372,6 +378,19 @@ public class MusicActivity extends Activity {
                 try {
                     Intent i = new Intent(MusicActivity.this, MusicPlaybackService.class);
                     i.setAction(MusicPlaybackService.ACTION_STOP);
+                    startService(i);
+                } catch (Exception ignored) {}
+            });
+        }
+
+        /** Pushed from JS roughly once per second while playing. */
+        @JavascriptInterface public void onPosition(final long posMs, final long durMs) {
+            runOnUiThread(() -> {
+                try {
+                    Intent i = new Intent(MusicActivity.this, MusicPlaybackService.class);
+                    i.setAction(MusicPlaybackService.ACTION_UPDATE_POSITION);
+                    i.putExtra(MusicPlaybackService.EXTRA_POSITION, posMs);
+                    i.putExtra(MusicPlaybackService.EXTRA_DURATION, durMs);
                     startService(i);
                 } catch (Exception ignored) {}
             });

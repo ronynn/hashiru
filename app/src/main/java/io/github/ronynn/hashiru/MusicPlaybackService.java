@@ -27,16 +27,18 @@ import java.io.File;
 
 public class MusicPlaybackService extends Service {
 
-    public static final String ACTION_MEDIA_CMD = "io.github.ronynn.hashiru.MUSIC_MEDIA_CMD";
+    public static final String ACTION_MEDIA_CMD       = "io.github.ronynn.hashiru.MUSIC_MEDIA_CMD";
+    public static final String ACTION_START           = "io.github.ronynn.hashiru.MUSIC_START";
+    public static final String ACTION_UPDATE_META     = "io.github.ronynn.hashiru.MUSIC_META";
+    public static final String ACTION_UPDATE_POSITION = "io.github.ronynn.hashiru.MUSIC_POS";
+    public static final String ACTION_PAUSE           = "io.github.ronynn.hashiru.MUSIC_PAUSE";
+    public static final String ACTION_STOP            = "io.github.ronynn.hashiru.MUSIC_STOP";
 
-    public static final String ACTION_START       = "io.github.ronynn.hashiru.MUSIC_START";
-    public static final String ACTION_UPDATE_META = "io.github.ronynn.hashiru.MUSIC_META";
-    public static final String ACTION_PAUSE       = "io.github.ronynn.hashiru.MUSIC_PAUSE";
-    public static final String ACTION_STOP        = "io.github.ronynn.hashiru.MUSIC_STOP";
-
-    public static final String EXTRA_TITLE   = "title";
-    public static final String EXTRA_ARTIST  = "artist";
-    public static final String EXTRA_SONG_ID = "song_id";
+    public static final String EXTRA_TITLE    = "title";
+    public static final String EXTRA_ARTIST   = "artist";
+    public static final String EXTRA_SONG_ID  = "song_id";
+    public static final String EXTRA_POSITION = "position";
+    public static final String EXTRA_DURATION = "duration";
 
     private static final String CHANNEL_ID = "hashiru_music_playback";
     private static final int NOTIF_ID = 0x4D555349;
@@ -47,13 +49,16 @@ public class MusicPlaybackService extends Service {
     private String title = "Music";
     private String artist = "";
     private long currentSongId = -1;
+    private long currentPosition = 0;
+    private long currentDuration = 0;
+    private boolean foregroundStarted = false;
 
     private final BroadcastReceiver noisyReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
             if (AudioManager.ACTION_AUDIO_BECOMING_NOISY.equals(intent.getAction())) {
                 if (playing) {
                     playing = false;
-                    broadcast("pause");
+                    broadcast("pause", -1);
                     updateNotification();
                     updateSession();
                 }
@@ -65,13 +70,11 @@ public class MusicPlaybackService extends Service {
         super.onCreate();
         createChannel();
         ensureSession();
-
         IntentFilter noisyFilter = new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY);
-        if (Build.VERSION.SDK_INT >= 33) {
+        if (Build.VERSION.SDK_INT >= 33)
             registerReceiver(noisyReceiver, noisyFilter, Context.RECEIVER_NOT_EXPORTED);
-        } else {
+        else
             registerReceiver(noisyReceiver, noisyFilter);
-        }
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
@@ -79,6 +82,18 @@ public class MusicPlaybackService extends Service {
 
         if (ACTION_STOP.equals(action)) {
             shutdown();
+            return START_NOT_STICKY;
+        }
+
+        // Position updates: refresh notification + session without a new
+        // foreground promotion — keeps the notification seekbar live.
+        if (ACTION_UPDATE_POSITION.equals(action)) {
+            if (intent != null) {
+                currentPosition = intent.getLongExtra(EXTRA_POSITION, currentPosition);
+                currentDuration = intent.getLongExtra(EXTRA_DURATION, currentDuration);
+            }
+            updateNotification();
+            updateSession();
             return START_NOT_STICKY;
         }
 
@@ -91,8 +106,12 @@ public class MusicPlaybackService extends Service {
             applyExtras(intent);
         }
 
-        startForegroundSafely();
-        updateNotification();
+        if (!foregroundStarted) {
+            startForegroundSafely();
+            foregroundStarted = true;
+        } else {
+            updateNotification();
+        }
         updateSession();
         return START_NOT_STICKY;
     }
@@ -103,7 +122,12 @@ public class MusicPlaybackService extends Service {
         long sid = intent.getLongExtra(EXTRA_SONG_ID, -1);
         if (t != null && !t.isEmpty()) title = t;
         if (a != null) artist = a;
-        if (sid > 0) currentSongId = sid;
+        if (sid > 0 && sid != currentSongId) {
+            // Song changed → reset position so notification starts at 0:00
+            currentSongId = sid;
+            currentPosition = 0;
+            currentDuration = 0;
+        }
     }
 
     private void startForegroundSafely() {
@@ -160,6 +184,13 @@ public class MusicPlaybackService extends Service {
                     playing ? "Pause" : "Play", togglePi)
          .addAction(android.R.drawable.ic_media_next, "Next", nextPi);
 
+        // Show a real position/duration in the notification progress area.
+        // The progress bar in SystemUI is derived from PlaybackState, so
+        // these must match the current song, not be stuck at 0.
+        if (currentDuration > 0) {
+            b.setProgress(100, (int)((currentPosition * 100L) / Math.max(1L, currentDuration)), false);
+        }
+
         if (bigIcon != null) b.setLargeIcon(bigIcon);
         return b.build();
     }
@@ -186,20 +217,29 @@ public class MusicPlaybackService extends Service {
         mediaSession.setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS
                 | MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS);
         mediaSession.setCallback(new MediaSession.Callback() {
-            @Override public void onPlay()  { broadcast("play"); }
-            @Override public void onPause() { broadcast("pause"); }
-            @Override public void onSkipToNext()     { broadcast("next"); }
-            @Override public void onSkipToPrevious() { broadcast("prev"); }
-            @Override public void onStop()  { broadcast("stop"); }
+            @Override public void onPlay()  { broadcast("play", -1); }
+            @Override public void onPause() { broadcast("pause", -1); }
+            @Override public void onSkipToNext()     { broadcast("next", -1); }
+            @Override public void onSkipToPrevious() { broadcast("prev", -1); }
+            @Override public void onStop()  { broadcast("stop", -1); }
+            @Override public void onSeekTo(long pos) {
+                // User dragged the scrubber in the notification or lock screen.
+                currentPosition = pos;
+                broadcast("seek", pos);
+                updateNotification();
+                updateSession();
+            }
         });
         mediaSession.setActive(true);
     }
 
     private void updateSession() {
         if (mediaSession == null) return;
+
         MediaMetadata.Builder mb = new MediaMetadata.Builder()
                 .putString(MediaMetadata.METADATA_KEY_TITLE, title)
-                .putString(MediaMetadata.METADATA_KEY_ARTIST, artist);
+                .putString(MediaMetadata.METADATA_KEY_ARTIST, artist)
+                .putLong(MediaMetadata.METADATA_KEY_DURATION, currentDuration);
         if (currentSongId > 0) {
             Bitmap cover = loadCoverFor(currentSongId);
             if (cover != null)
@@ -207,15 +247,19 @@ public class MusicPlaybackService extends Service {
         }
         mediaSession.setMetadata(mb.build());
 
+        // ACTION_SEEK_TO is what enables the OS to show a draggable
+        // scrubber in the notification and lock screen.
         mediaSession.setPlaybackState(new PlaybackState.Builder()
                 .setActions(PlaybackState.ACTION_PLAY
                         | PlaybackState.ACTION_PAUSE
                         | PlaybackState.ACTION_PLAY_PAUSE
                         | PlaybackState.ACTION_SKIP_TO_NEXT
                         | PlaybackState.ACTION_SKIP_TO_PREVIOUS
+                        | PlaybackState.ACTION_SEEK_TO
                         | PlaybackState.ACTION_STOP)
                 .setState(playing ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED,
-                        PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1.0f)
+                        currentPosition,
+                        playing ? 1.0f : 0.0f)
                 .build());
     }
 
@@ -239,10 +283,11 @@ public class MusicPlaybackService extends Service {
         return null;
     }
 
-    private void broadcast(String cmd) {
+    private void broadcast(String cmd, long pos) {
         Intent i = new Intent(ACTION_MEDIA_CMD)
                 .setPackage(getPackageName())
                 .putExtra("cmd", cmd);
+        if (pos >= 0) i.putExtra("pos", pos);
         sendBroadcast(i);
     }
 
@@ -271,7 +316,7 @@ public class MusicPlaybackService extends Service {
         if (mediaSession != null) {
             try {
                 mediaSession.setPlaybackState(new PlaybackState.Builder()
-                        .setState(PlaybackState.STATE_STOPPED, 0, 1.0f).build());
+                        .setState(PlaybackState.STATE_STOPPED, 0, 0.0f).build());
                 mediaSession.setActive(false);
                 mediaSession.release();
             } catch (Exception ignored) {}
@@ -281,7 +326,7 @@ public class MusicPlaybackService extends Service {
     }
 
     @Override public void onTaskRemoved(Intent rootIntent) {
-        broadcast("stop");
+        broadcast("stop", -1);
         Intent stopIntent = new Intent(this, MusicPlaybackService.class);
         stopIntent.setAction(ACTION_STOP);
         try { startService(stopIntent); } catch (Exception ignored) {}

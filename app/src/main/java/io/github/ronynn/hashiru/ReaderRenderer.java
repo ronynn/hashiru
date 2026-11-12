@@ -41,6 +41,7 @@ public class ReaderRenderer {
             Node doc = PARSER.parse(raw);
             convertSoftBreaksToHard(doc);
             body = RENDERER.render(doc);
+            body = body.replaceAll("(?s)<!--.*?-->", "");
             body = body.replace("<table>", "<div class=\"table-wrap\"><table>")
                        .replace("</table>", "</table></div>");
         } else {

@@ -5,6 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Hashiru Music</title>
 <link rel="stylesheet" href="music.css">
+<script>
+(function(){
+  try {
+    var t = localStorage.getItem('music-theme') || 'default';
+    var f = localStorage.getItem('music-font') || 'sans';
+    document.documentElement.setAttribute('data-theme', t);
+    document.documentElement.setAttribute('data-font', f);
+  } catch (e) {}
+})();
+</script>
 </head>
 <body>
 
@@ -16,17 +26,11 @@
         <button id="rescanBtn">RESCAN</button>
         <div class="select-wrapper">
           <select id="fontPicker">
-            <optgroup label="SANS">
               <option value="sans">SANS</option>
               <option value="sans-light">SANS LIGHT</option>
               <option value="sans-serif-condensed">CONDENSED</option>
-            </optgroup>
-            <optgroup label="SERIF">
               <option value="serif">SERIF</option>
-            </optgroup>
-            <optgroup label="MONO">
               <option value="mono">MONO</option>
-            </optgroup>
           </select>
         </div>
         <div class="select-wrapper">
@@ -53,6 +57,8 @@
             <optgroup label="SPECIAL">
               <option value="dynamic">DYNAMIC</option>
               <option value="glass-light">GLASS LIGHT</option>
+              <option value="glass-moss">GLASS MOSS</option>
+              <option value="glass-sunset">GLASS SUNSET</option>
             </optgroup>
           </select>
         </div>
@@ -79,7 +85,7 @@
           <div class="cover-placeholder" id="coverPlaceholder">♪</div>
           <img id="coverImg" src="" alt="Cover" style="display:none">
         </div>
-        <div class="info">
+        <div class="info" id="infoBox" title="Double-tap to edit metadata">
           <div class="title" id="songTitle">NO TRACK LOADED</div>
           <div class="artist" id="songArtist">UNKNOWN ARTIST</div>
           <div class="album" id="songAlbum">UNKNOWN ALBUM</div>
@@ -108,10 +114,9 @@
   <div class="modal">
     <div class="modal-header">EDIT METADATA</div>
     <div class="modal-body">
-      <label>Title<input type="text" id="editTitle"></label>
-      <label>Artist<input type="text" id="editArtist"></label>
-      <label>Album<input type="text" id="editAlbum"></label>
-      <label>Track<input type="text" id="editTrack" inputmode="numeric"></label>
+      <label>Title<input type="text" id="editTitle" autocomplete="off"></label>
+      <label>Artist<input type="text" id="editArtist" autocomplete="off"></label>
+      <label>Album<input type="text" id="editAlbum" autocomplete="off"></label>
       <button id="editChangeCover">CHANGE COVER</button>
     </div>
     <div class="modal-footer">
@@ -127,10 +132,35 @@
 (function(){
 'use strict';
 
-const THEME_VALUES = ['default','gruvbox','nord','dracula','tokyo','light','solar','dynamic','winamp','monokai','crt-amber','forest','ev-light','chrome','glass-light'];
-const FONT_VALUES  = ['sans','sans-light','sans-serif-condensed','serif','mono'];
-const LIGHT_THEMES = ['light','solar','ev-light','glass-light'];
-const HISTORY_MAX  = 50;
+/* =========================================================
+   Global selection / long-press kill switch
+   ========================================================= */
+document.addEventListener('selectstart', function(e) {
+  var t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+  e.preventDefault();
+}, true);
+document.addEventListener('contextmenu', function(e) {
+  var t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+  e.preventDefault();
+  return false;
+}, true);
+document.addEventListener('longpress', function(e) {
+  var t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+  e.preventDefault();
+}, true);
+
+/* =========================================================
+   Constants
+   ========================================================= */
+const THEME_VALUES   = ['default','gruvbox','nord','dracula','tokyo','light','solar','dynamic','winamp','monokai','crt-amber','forest','ev-light','chrome','glass-light','glass-moss','glass-sunset'];
+const FONT_VALUES    = ['sans','sans-light','sans-serif-condensed','serif','mono'];
+const LIGHT_THEMES   = ['light','solar','ev-light','glass-light','glass-moss','glass-sunset'];
+const HISTORY_MAX    = 50;
+const DOUBLE_TAP_MS  = 280;
+const POS_THROTTLE   = 1000;
 
 const $ = id => document.getElementById(id);
 const audio = $('audio');
@@ -142,6 +172,7 @@ const coverImg = $('coverImg');
 const coverPlaceholder = $('coverPlaceholder');
 const searchInput = $('searchInput');
 const editModal = $('editModal');
+const infoBox = $('infoBox');
 
 const state = {
   songs: [], folders: {},
@@ -158,7 +189,8 @@ const openFolders = new Set();
 
 let colors = { fg: '#fff', accent: '#888', dim: '#555' };
 let audioCtx = null, analyser = null, timeData = null, animationId = null;
-let statusTimer = null;
+let statusTimer = null, saveTimer = null, resizeTimer = null;
+let lastPosSent = 0;
 
 const fmt = s => !isFinite(s) ? '00:00'
   : `${String(Math.floor(s/60)).padStart(2,'0')}:${String(Math.floor(s%60)).padStart(2,'0')}`;
@@ -169,9 +201,7 @@ function setStatus(msg, clearMs) {
   toastEl.textContent = msg;
   toastEl.classList.add('show');
   if (clearMs) {
-    statusTimer = setTimeout(() => {
-      toastEl.classList.remove('show');
-    }, clearMs);
+    statusTimer = setTimeout(() => { toastEl.classList.remove('show'); }, clearMs);
   }
 }
 
@@ -216,8 +246,7 @@ function themeIsLight(theme) {
 }
 
 function updateSystemBars(theme) {
-  const isLight = themeIsLight(theme);
-  try { __HashiruMusic.setBarsLight(isLight); } catch (e) {}
+  try { __HashiruMusic.setBarsLight(themeIsLight(theme)); } catch (e) {}
 }
 
 function applyTheme(v) {
@@ -231,8 +260,7 @@ function applyTheme(v) {
   clearDynamicInlineStyles();
 
   if (v === 'dynamic') {
-    let hue = 210;
-    let dark = true;
+    let hue = 210, dark = true;
     try {
       const wp = JSON.parse(__HashiruMusic.getWallpaperTheme());
       if (wp.hue >= 0) hue = wp.hue;
@@ -276,9 +304,7 @@ function loadPlaybackModes() {
   } catch (e) {}
 }
 
-function updateShuffleBtn() {
-  $('shuffleBtn').classList.toggle('active', state.shuffle);
-}
+function updateShuffleBtn() { $('shuffleBtn').classList.toggle('active', state.shuffle); }
 
 function updateRepeatBtn() {
   const btn = $('repeatBtn');
@@ -357,43 +383,11 @@ function renderEmpty() {
   playlistEl.appendChild(d);
 }
 
-function makeFolder(name, count, songs, folderKey) {
-  const det = document.createElement('details');
-  det.className = 'folder-group';
-  det.open = openFolders.has(folderKey);
-  det.addEventListener('toggle', () => {
-    if (det.open) openFolders.add(folderKey);
-    else openFolders.delete(folderKey);
-  });
-  const sum = document.createElement('summary');
-  sum.className = 'folder-summary';
-  const nameEl = document.createElement('span');
-  nameEl.className = 'folder-name';
-  nameEl.textContent = name;
-  const cntEl = document.createElement('span');
-  cntEl.className = 'folder-count';
-  cntEl.textContent = '(' + count + ')';
-  sum.append(nameEl, cntEl);
-  det.appendChild(sum);
-  if (!songs.length) {
-    const em = document.createElement('div');
-    em.className = 'empty-msg';
-    em.textContent = folderKey.startsWith('fav:')
-      ? (folderKey === 'fav:starred' ? 'NO STARRED SONGS' : 'NO HISTORY YET')
-      : 'EMPTY';
-    det.appendChild(em);
-  } else {
-    for (let i = 0; i < songs.length; i++)
-      det.appendChild(makeSongRow(songs[i], i));
-  }
-  return det;
-}
-
 function renderAll() {
   const names = Object.keys(state.folders);
   const frag = document.createDocumentFragment();
   for (const name of names) {
-    frag.appendChild(makeFolder(name, state.folders[name].length, state.folders[name], 'all:' + name));
+    frag.appendChild(makeFolder(name, state.folders[name], 'all:' + name));
   }
   playlistEl.appendChild(frag);
 }
@@ -406,8 +400,8 @@ function renderFav() {
     .filter(s => !!s);
 
   const frag = document.createDocumentFragment();
-  frag.appendChild(makeFolder('STARRED', favs.length, favs, 'fav:starred'));
-  frag.appendChild(makeFolder('HISTORY', historySongs.length, historySongs, 'fav:history'));
+  frag.appendChild(makeFolder('STARRED', favs, 'fav:starred', 'NO STARRED SONGS'));
+  frag.appendChild(makeFolder('HISTORY', historySongs, 'fav:history', 'NO HISTORY YET'));
   playlistEl.appendChild(frag);
 }
 
@@ -431,14 +425,49 @@ function renderSearch() {
   playlistEl.appendChild(frag);
 }
 
+function makeFolder(name, songs, folderKey, emptyMsg) {
+  const det = document.createElement('details');
+  det.className = 'folder-group';
+  det.open = openFolders.has(folderKey);
+  det.addEventListener('toggle', () => {
+    if (det.open) openFolders.add(folderKey);
+    else openFolders.delete(folderKey);
+  });
+
+  const sum = document.createElement('summary');
+  sum.className = 'folder-summary';
+  const nameEl = document.createElement('span');
+  nameEl.className = 'folder-name';
+  nameEl.textContent = name;
+  const cntEl = document.createElement('span');
+  cntEl.className = 'folder-count';
+  cntEl.textContent = '(' + songs.length + ')';
+  sum.append(nameEl, cntEl);
+  det.appendChild(sum);
+
+  if (!songs.length) {
+    const em = document.createElement('div');
+    em.className = 'empty-msg';
+    em.textContent = emptyMsg || 'EMPTY';
+    det.appendChild(em);
+  } else {
+    for (let i = 0; i < songs.length; i++)
+      det.appendChild(makeSongRow(songs[i], i));
+  }
+  return det;
+}
+
+/* Song rows: single tap = play immediately. No double-tap on rows. */
 function makeSongRow(song, displayIdx) {
   const row = document.createElement('div');
   row.className = 'song-row';
   row.dataset.songId = String(song.id);
+  row.setAttribute('unselectable', 'on');
   if (song.id === state.currentId) row.classList.add('active');
 
   const name = document.createElement('span');
   name.className = 'track-name';
+  name.setAttribute('unselectable', 'on');
   const label = String(song.title || 'Unknown');
   name.textContent = String(displayIdx + 1).padStart(2, '0') + '. ' + label;
   name.title = label;
@@ -450,43 +479,37 @@ function makeSongRow(song, displayIdx) {
   fav.addEventListener('click', e => { e.stopPropagation(); toggleFav(song); });
 
   row.append(name, fav);
+
   row.addEventListener('click', () => {
     if (state.editingSongId > 0) return;
     playById(song.id);
   });
 
-  let pressTimer = null;
-  let longPressed = false;
-  row.addEventListener('touchstart', () => {
-    longPressed = false;
-    clearTimeout(pressTimer);
-    pressTimer = setTimeout(() => {
-      longPressed = true;
-      openEditModal(song);
-    }, 500);
-  }, { passive: true });
-  ['touchend','touchmove','touchcancel'].forEach(evt =>
-    row.addEventListener(evt, () => clearTimeout(pressTimer), { passive: true }));
-  row.addEventListener('contextmenu', e => { e.preventDefault(); });
-  row.addEventListener('click', e => {
-    if (longPressed) { e.stopPropagation(); longPressed = false; return; }
-  }, true);
-
   return row;
 }
 
-function updateActiveRow() {
-  playlistEl.querySelectorAll('.song-row').forEach(row => {
-    const id = parseInt(row.dataset.songId, 10);
-    row.classList.toggle('active', id === state.currentId);
+/* Info box: double-tap opens the editor for the currently playing song. */
+function setupInfoBoxDoubleTap() {
+  if (!infoBox) return;
+  let lastTap = 0;
+  infoBox.addEventListener('click', () => {
+    if (state.currentId < 0) return;
+    const now = Date.now();
+    if (now - lastTap < DOUBLE_TAP_MS) {
+      lastTap = 0;
+      const song = state.songs.find(s => s.id === state.currentId);
+      if (song) openEditModal(song);
+    } else {
+      lastTap = now;
+    }
   });
 }
 
 async function toggleFav(song) {
   const newFav = !song.isFav;
   song.isFav = newFav;
-  const row = playlistEl.querySelector('.song-row[data-song-id="' + song.id + '"]');
-  let btn = row ? row.querySelector('.fav-btn') : null;
+  const row = playlistEl.querySelector(`.song-row[data-song-id="${song.id}"]`);
+  const btn = row ? row.querySelector('.fav-btn') : null;
   if (btn) btn.textContent = newFav ? '★' : '☆';
   try {
     await fetch(`/_music/fav?id=${song.id}&on=${newFav ? 1 : 0}`, { cache: 'no-store' });
@@ -496,19 +519,19 @@ async function toggleFav(song) {
   }
 }
 
+function updateActiveRow() {
+  playlistEl.querySelectorAll('.song-row').forEach(row => {
+    const id = parseInt(row.dataset.songId, 10);
+    row.classList.toggle('active', id === state.currentId);
+  });
+}
+
 function focusCurrent() {
   if (state.currentId < 0) return;
   const active = playlistEl.querySelector('.song-row.active');
   if (!active) return;
   const folder = active.closest('details');
-  if (folder) {
-    folder.open = true;
-    const key = folder.querySelector('.folder-name')?.textContent;
-    if (key) {
-      if (state.view === 'all') openFolders.add('all:' + key);
-      // FAV folders are keyed differently; rely on toggle listener
-    }
-  }
+  if (folder) folder.open = true;
   setTimeout(() => {
     try { active.scrollIntoView({ block: 'center' }); } catch (e) {}
   }, 60);
@@ -519,7 +542,6 @@ async function openEditModal(song) {
   $('editTitle').value  = song.title  || '';
   $('editArtist').value = song.artist || '';
   $('editAlbum').value  = song.album  || '';
-  $('editTrack').value  = song.track != null ? String(song.track) : '';
   editModal.classList.add('active');
 
   try {
@@ -529,7 +551,6 @@ async function openEditModal(song) {
     $('editTitle').value  = m.title  || '';
     $('editArtist').value = m.artist || '';
     $('editAlbum').value  = m.album  || '';
-    $('editTrack').value  = m.track  || '';
   } catch (e) {}
 }
 
@@ -544,10 +565,9 @@ async function saveEditModal() {
   const title  = $('editTitle').value.trim();
   const artist = $('editArtist').value.trim();
   const album  = $('editAlbum').value.trim();
-  const track  = $('editTrack').value.trim();
 
   try {
-    const params = new URLSearchParams({ id: String(id), title, artist, album, track });
+    const params = new URLSearchParams({ id: String(id), title, artist, album });
     await fetch(`/_music/metadata?${params}`, { cache: 'no-store' });
 
     const idx = state.songs.findIndex(s => s.id === id);
@@ -555,7 +575,6 @@ async function saveEditModal() {
       state.songs[idx].title  = title;
       state.songs[idx].artist = artist;
       state.songs[idx].album  = album;
-      state.songs[idx].track  = parseInt(track) || 0;
     }
     if (state.currentId === id) {
       $('songTitle').textContent  = title  || 'UNKNOWN';
@@ -563,7 +582,7 @@ async function saveEditModal() {
       $('songAlbum').textContent  = album  || 'UNKNOWN ALBUM';
       try { __HashiruMusic.refreshNotification(); } catch (e) {}
     }
-    const row = playlistEl.querySelector('.song-row[data-song-id="' + id + '"] .track-name');
+    const row = playlistEl.querySelector(`.song-row[data-song-id="${id}"] .track-name`);
     if (row) {
       const num = row.textContent.split('.')[0];
       row.textContent = num + '. ' + (title || 'Unknown');
@@ -591,12 +610,13 @@ function playById(id) {
   updateNowPlaying(song);
   updateActiveRow();
   saveLast();
+  lastPosSent = 0;
 }
 
 function advanceNext(auto) {
   if (!state.songs.length) return;
 
-  if (state.repeat === 'one') {
+  if (auto && state.repeat === 'one') {
     if (state.currentId > 0) {
       audio.currentTime = 0;
       audio.play().catch(()=>{});
@@ -606,8 +626,7 @@ function advanceNext(auto) {
 
   if (state.shuffle) {
     if (state.songs.length === 1) { playById(state.songs[0].id); return; }
-    let nextIdx;
-    let guard = 0;
+    let nextIdx, guard = 0;
     do {
       nextIdx = Math.floor(Math.random() * state.songs.length);
       guard++;
@@ -646,11 +665,19 @@ function updateNowPlaying(song) {
 function loadCoverImage(id, title) {
   const img = $('coverImg');
   const ph = $('coverPlaceholder');
+  const fallbackLetter = ((title || '').trim().charAt(0) || '♪').toUpperCase();
+  if (id <= 0) {
+    img.style.display = 'none';
+    img.removeAttribute('src');
+    ph.style.display = 'block';
+    ph.textContent = fallbackLetter;
+    return;
+  }
   img.onload = () => { img.style.display = 'block'; ph.style.display = 'none'; };
   img.onerror = () => {
     img.style.display = 'none';
     ph.style.display = 'block';
-    ph.textContent = ((title || '').trim().charAt(0) || '♪').toUpperCase();
+    ph.textContent = fallbackLetter;
   };
   img.src = `/_music/cover/${id}?v=${Date.now()}`;
 }
@@ -662,6 +689,22 @@ function saveLast() {
       localStorage.setItem('music-last-pos', audio.currentTime || 0);
     } catch (e) {}
   }
+}
+
+function startSaveTimer() { if (!saveTimer) saveTimer = setInterval(saveLast, 5000); }
+function stopSaveTimer()  { if (saveTimer) { clearInterval(saveTimer); saveTimer = null; } }
+
+function pushPosition(force) {
+  if (!audio || !isFinite(audio.duration) || audio.duration <= 0) return;
+  const now = Date.now();
+  if (!force && (now - lastPosSent) < POS_THROTTLE) return;
+  lastPosSent = now;
+  try {
+    __HashiruMusic.onPosition(
+      Math.round((audio.currentTime || 0) * 1000),
+      Math.round(audio.duration * 1000)
+    );
+  } catch (e) {}
 }
 
 function restoreLast() {
@@ -682,6 +725,7 @@ function restoreLast() {
     audio.removeEventListener('loadedmetadata', onMeta);
     if (lastPos > 0 && isFinite(audio.duration))
       audio.currentTime = Math.min(lastPos, audio.duration - 0.5);
+    pushPosition(true);
   });
 }
 
@@ -698,7 +742,7 @@ function initAudio() {
       analyser.connect(audioCtx.destination);
     } catch (e) { console.warn('audio ctx failed', e); }
   }
-  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(()=>{});
 }
 
 let cw = 0, ch = 0, cdpr = 0;
@@ -759,6 +803,9 @@ function setupAudio() {
     initAudio();
     resizeCanvas();
     if (!animationId) drawVisualizer();
+    startSaveTimer();
+    lastPosSent = 0;
+    pushPosition(true);
     const s = state.songs[state.currentIndex];
     if (s) try { __HashiruMusic.onPlay(s.title || '', s.artist || '', s.id); } catch (e) {}
   });
@@ -769,24 +816,33 @@ function setupAudio() {
     drawStatic();
     try { __HashiruMusic.onPause(); } catch (e) {}
     saveLast();
+    pushPosition(true);
+    stopSaveTimer();
+    if (audioCtx && audioCtx.state === 'running') audioCtx.suspend().catch(()=>{});
   });
   audio.addEventListener('ended', () => advanceNext(true));
-  audio.addEventListener('loadedmetadata', () =>
-    $('durationTime').textContent = fmt(audio.duration));
+  audio.addEventListener('loadedmetadata', () => {
+    $('durationTime').textContent = fmt(audio.duration);
+    pushPosition(true);
+  });
   audio.addEventListener('timeupdate', () => {
     if (audio.duration && isFinite(audio.duration)) {
       $('progressFill').style.width = (audio.currentTime / audio.duration * 100) + '%';
       $('currentTime').textContent = fmt(audio.currentTime);
     }
+    pushPosition(false);
   });
-  setInterval(() => { if (state.isPlaying) saveLast(); }, 5000);
+}
 
-  // If AudioContext suspends (WebView quirk), resume so playback isn't silent.
-  setInterval(() => {
-    if (audioCtx && audioCtx.state === 'suspended' && state.isPlaying && !audio.paused) {
-      audioCtx.resume().catch(()=>{});
+function setupVisibilityHandling() {
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (animationId) { cancelAnimationFrame(animationId); animationId = null; }
+    } else if (state.isPlaying && analyser && !animationId) {
+      resizeCanvas();
+      drawVisualizer();
     }
-  }, 1000);
+  });
 }
 
 function setupUI() {
@@ -853,6 +909,7 @@ function setupUI() {
     const r = e.currentTarget.getBoundingClientRect();
     const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
     audio.currentTime = pct * audio.duration;
+    pushPosition(true);
   });
 
   $('coverBox').addEventListener('click', () => {
@@ -875,8 +932,12 @@ function setupUI() {
   });
 
   window.addEventListener('resize', () => {
-    resizeCanvas();
-    if (!state.isPlaying) drawStatic();
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      resizeTimer = null;
+      resizeCanvas();
+      if (!state.isPlaying) drawStatic();
+    }, 150);
   });
 }
 
@@ -895,12 +956,18 @@ function applyInsets() {
 window.__hashiruMusic = {
   rescan: () => loadLibrary(),
   playById: (id) => playById(id),
-  cmd: (c) => {
+  cmd: (c, arg) => {
     if (c === 'play') { if (audio.src) audio.play().catch(()=>{}); }
     else if (c === 'pause') audio.pause();
-    else if (c === 'stop') { audio.pause(); try { audio.currentTime = 0; } catch (e) {} }
+    else if (c === 'stop') { audio.pause(); try { audio.currentTime = 0; } catch (e) {} pushPosition(true); }
     else if (c === 'prev') playPrev();
     else if (c === 'next') playNext();
+    else if (c === 'seek') {
+      if (isFinite(arg) && arg >= 0 && isFinite(audio.duration) && audio.duration > 0) {
+        audio.currentTime = Math.min(audio.duration, arg / 1000);
+        pushPosition(true);
+      }
+    }
   },
   refreshCover: (id) => {
     if (state.currentId === id) {
@@ -919,7 +986,9 @@ async function init() {
   updateShuffleBtn();
   updateRepeatBtn();
   setupUI();
+  setupInfoBoxDoubleTap();
   setupAudio();
+  setupVisibilityHandling();
   resizeCanvas();
   drawStatic();
   await loadLibrary();
