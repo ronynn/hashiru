@@ -21,6 +21,7 @@ import android.media.session.PlaybackState;
 import android.net.Uri;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.SystemClock;
 import android.provider.MediaStore;
 
 import java.io.File;
@@ -51,7 +52,13 @@ public class MusicPlaybackService extends Service {
     private long currentSongId = -1;
     private long currentPosition = 0;
     private long currentDuration = 0;
+    /** Wall-clock when currentPosition was accurate. Used to extrapolate. */
+    private long positionUpdateTime = 0;
     private boolean foregroundStarted = false;
+
+    /** Cached cover so notification rebuilds don't hit disk. */
+    private long cachedCoverSongId = -1;
+    private Bitmap cachedCoverBitmap = null;
 
     private final BroadcastReceiver noisyReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
@@ -60,7 +67,8 @@ public class MusicPlaybackService extends Service {
                     playing = false;
                     broadcast("pause", -1);
                     updateNotification();
-                    updateSession();
+                    updateSessionMetadata();
+                    updateSessionPlaybackState();
                 }
             }
         }
@@ -85,20 +93,40 @@ public class MusicPlaybackService extends Service {
             return START_NOT_STICKY;
         }
 
-        // Position updates: refresh notification + session without a new
-        // foreground promotion — keeps the notification seekbar live.
+        // ---- Fast path: position-only update (seek / pause positions). ----
+        // Sets PlaybackState BEFORE touching the notification so the seekbar
+        // starts interpolating immediately — no waiting for disk I/O.
         if (ACTION_UPDATE_POSITION.equals(action)) {
             if (intent != null) {
-                currentPosition = intent.getLongExtra(EXTRA_POSITION, currentPosition);
-                currentDuration = intent.getLongExtra(EXTRA_DURATION, currentDuration);
+                long pos = intent.getLongExtra(EXTRA_POSITION, -1);
+                long dur = intent.getLongExtra(EXTRA_DURATION, -1);
+                if (pos >= 0) {
+                    currentPosition = pos;
+                    positionUpdateTime = SystemClock.elapsedRealtime();
+                }
+                if (dur > 0) currentDuration = dur;
             }
-            updateNotification();
-            updateSession();
+            if (!foregroundStarted) {
+                updateSessionMetadata();
+                updateSessionPlaybackState();
+                startForegroundSafely();
+                foregroundStarted = true;
+            } else {
+                updateSessionPlaybackState();
+            }
             return START_NOT_STICKY;
         }
 
+        // ---- State-change path. ----
         if (ACTION_PAUSE.equals(action)) {
             playing = false;
+            if (intent != null) {
+                long pos = intent.getLongExtra(EXTRA_POSITION, -1);
+                if (pos >= 0) {
+                    currentPosition = pos;
+                    positionUpdateTime = SystemClock.elapsedRealtime();
+                }
+            }
         } else if (ACTION_START.equals(action)) {
             playing = true;
             if (intent != null) applyExtras(intent);
@@ -106,13 +134,16 @@ public class MusicPlaybackService extends Service {
             applyExtras(intent);
         }
 
+        // CRITICAL: state + metadata FIRST (starts seekbar), notification second.
+        updateSessionMetadata();
+        updateSessionPlaybackState();
+
         if (!foregroundStarted) {
             startForegroundSafely();
             foregroundStarted = true;
         } else {
             updateNotification();
         }
-        updateSession();
         return START_NOT_STICKY;
     }
 
@@ -120,14 +151,26 @@ public class MusicPlaybackService extends Service {
         String t = intent.getStringExtra(EXTRA_TITLE);
         String a = intent.getStringExtra(EXTRA_ARTIST);
         long sid = intent.getLongExtra(EXTRA_SONG_ID, -1);
+        long pos = intent.getLongExtra(EXTRA_POSITION, -1);
+        long dur = intent.getLongExtra(EXTRA_DURATION, -1);
+
         if (t != null && !t.isEmpty()) title = t;
         if (a != null) artist = a;
+
         if (sid > 0 && sid != currentSongId) {
-            // Song changed → reset position so notification starts at 0:00
             currentSongId = sid;
             currentPosition = 0;
             currentDuration = 0;
+            positionUpdateTime = 0;
+            cachedCoverSongId = -1;
+            cachedCoverBitmap = null;
         }
+
+        if (pos >= 0) {
+            currentPosition = pos;
+            positionUpdateTime = SystemClock.elapsedRealtime();
+        }
+        if (dur > 0) currentDuration = dur;
     }
 
     private void startForegroundSafely() {
@@ -184,11 +227,12 @@ public class MusicPlaybackService extends Service {
                     playing ? "Pause" : "Play", togglePi)
          .addAction(android.R.drawable.ic_media_next, "Next", nextPi);
 
-        // Show a real position/duration in the notification progress area.
-        // The progress bar in SystemUI is derived from PlaybackState, so
-        // these must match the current song, not be stuck at 0.
+        // setProgress is a no-op visual on Android 11+ (MediaStyle uses
+        // PlaybackState), but it's needed for the seekbar on Android 10-.
         if (currentDuration > 0) {
-            b.setProgress(100, (int)((currentPosition * 100L) / Math.max(1L, currentDuration)), false);
+            long posAtNow = extrapolatedPosition();
+            int pct = (int)((posAtNow * 100L) / Math.max(1L, currentDuration));
+            b.setProgress(100, Math.max(0, Math.min(100, pct)), false);
         }
 
         if (bigIcon != null) b.setLargeIcon(bigIcon);
@@ -223,19 +267,27 @@ public class MusicPlaybackService extends Service {
             @Override public void onSkipToPrevious() { broadcast("prev", -1); }
             @Override public void onStop()  { broadcast("stop", -1); }
             @Override public void onSeekTo(long pos) {
-                // User dragged the scrubber in the notification or lock screen.
                 currentPosition = pos;
+                positionUpdateTime = SystemClock.elapsedRealtime();
                 broadcast("seek", pos);
-                updateNotification();
-                updateSession();
+                updateSessionPlaybackState();
             }
         });
         mediaSession.setActive(true);
     }
 
-    private void updateSession() {
-        if (mediaSession == null) return;
+    /** Extrapolate the position forward by elapsed time (when playing). */
+    private long extrapolatedPosition() {
+        if (!playing || positionUpdateTime <= 0) return currentPosition;
+        long elapsed = SystemClock.elapsedRealtime() - positionUpdateTime;
+        long pos = currentPosition + Math.max(0, elapsed);
+        if (currentDuration > 0 && pos > currentDuration) pos = currentDuration;
+        return pos;
+    }
 
+    /** Sets title / artist / cover — call when those change. */
+    private void updateSessionMetadata() {
+        if (mediaSession == null) return;
         MediaMetadata.Builder mb = new MediaMetadata.Builder()
                 .putString(MediaMetadata.METADATA_KEY_TITLE, title)
                 .putString(MediaMetadata.METADATA_KEY_ARTIST, artist)
@@ -246,9 +298,12 @@ public class MusicPlaybackService extends Service {
                 mb.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, cover);
         }
         mediaSession.setMetadata(mb.build());
+    }
 
-        // ACTION_SEEK_TO is what enables the OS to show a draggable
-        // scrubber in the notification and lock screen.
+    /** Sets position / play state / available actions — cheap, call often. */
+    private void updateSessionPlaybackState() {
+        if (mediaSession == null) return;
+        long pos = extrapolatedPosition();
         mediaSession.setPlaybackState(new PlaybackState.Builder()
                 .setActions(PlaybackState.ACTION_PLAY
                         | PlaybackState.ACTION_PAUSE
@@ -258,29 +313,40 @@ public class MusicPlaybackService extends Service {
                         | PlaybackState.ACTION_SEEK_TO
                         | PlaybackState.ACTION_STOP)
                 .setState(playing ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED,
-                        currentPosition,
-                        playing ? 1.0f : 0.0f)
+                        pos,
+                        playing ? 1.0f : 0.0f,
+                        SystemClock.elapsedRealtime())
                 .build());
     }
 
+    /** Cached — avoids disk I/O on every notification refresh. */
     private Bitmap loadCoverFor(long songId) {
+        if (songId == cachedCoverSongId && cachedCoverBitmap != null)
+            return cachedCoverBitmap;
+
+        Bitmap result = null;
         File coverDir = new File(getFilesDir(), "covers");
         File[] matches = coverDir.listFiles((d, name) -> name.startsWith(songId + "."));
         if (matches != null && matches.length > 0) {
-            try { return BitmapFactory.decodeFile(matches[0].getAbsolutePath()); }
+            try { result = BitmapFactory.decodeFile(matches[0].getAbsolutePath()); }
             catch (Exception ignored) {}
         }
-        try {
-            Uri audioUri = ContentUris.withAppendedId(
-                    MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, songId);
-            MediaMetadataRetriever mmr = new MediaMetadataRetriever();
-            mmr.setDataSource(this, audioUri);
-            byte[] pic = mmr.getEmbeddedPicture();
-            mmr.release();
-            if (pic != null && pic.length > 0)
-                return BitmapFactory.decodeByteArray(pic, 0, pic.length);
-        } catch (Exception ignored) {}
-        return null;
+        if (result == null) {
+            try {
+                Uri audioUri = ContentUris.withAppendedId(
+                        MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, songId);
+                MediaMetadataRetriever mmr = new MediaMetadataRetriever();
+                mmr.setDataSource(this, audioUri);
+                byte[] pic = mmr.getEmbeddedPicture();
+                mmr.release();
+                if (pic != null && pic.length > 0)
+                    result = BitmapFactory.decodeByteArray(pic, 0, pic.length);
+            } catch (Exception ignored) {}
+        }
+
+        cachedCoverSongId = songId;
+        cachedCoverBitmap = result;
+        return result;
     }
 
     private void broadcast(String cmd, long pos) {
@@ -322,6 +388,8 @@ public class MusicPlaybackService extends Service {
             } catch (Exception ignored) {}
             mediaSession = null;
         }
+        cachedCoverBitmap = null;
+        cachedCoverSongId = -1;
         stopSelf();
     }
 
@@ -340,6 +408,7 @@ public class MusicPlaybackService extends Service {
             if (Build.VERSION.SDK_INT >= 24) stopForeground(Service.STOP_FOREGROUND_REMOVE);
             else stopForeground(true);
         } catch (Exception ignored) {}
+        cachedCoverBitmap = null;
         super.onDestroy();
     }
 

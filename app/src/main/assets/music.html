@@ -91,7 +91,9 @@
           <div class="album" id="songAlbum">UNKNOWN ALBUM</div>
         </div>
       </div>
-      <div class="visualizer-container"><canvas id="visualizer"></canvas></div>
+      <div class="visualizer-container" id="visualizerBox" title="Double-tap to switch visualization">
+        <canvas id="visualizer"></canvas>
+      </div>
       <div class="player-controls">
         <button id="shuffleBtn" class="mode-btn" title="Shuffle">&#8646;</button>
         <button id="prevBtn">&#9664;&#9664;</button>
@@ -132,9 +134,7 @@
 (function(){
 'use strict';
 
-/* =========================================================
-   Global selection / long-press kill switch
-   ========================================================= */
+/* Global selection / long-press kill switch */
 document.addEventListener('selectstart', function(e) {
   var t = e.target;
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
@@ -152,15 +152,19 @@ document.addEventListener('longpress', function(e) {
   e.preventDefault();
 }, true);
 
-/* =========================================================
-   Constants
-   ========================================================= */
 const THEME_VALUES   = ['default','gruvbox','nord','dracula','tokyo','light','solar','dynamic','winamp','monokai','crt-amber','forest','ev-light','chrome','glass-light','glass-moss','glass-sunset'];
 const FONT_VALUES    = ['sans','sans-light','sans-serif-condensed','serif','mono'];
 const LIGHT_THEMES   = ['light','solar','ev-light','glass-light','glass-moss','glass-sunset'];
 const HISTORY_MAX    = 50;
 const DOUBLE_TAP_MS  = 280;
-const POS_THROTTLE   = 1000;
+const WAVE_BUCKETS   = 200;
+
+const VIZ_WAVE     = 0;
+const VIZ_PROGRESS = 1;
+const VIZ_BARS     = 2;
+const VIZ_RADIAL   = 3;
+const VIZ_MODE_NAMES = ['WAVE', 'PROGRESS', 'BARS', 'RADIAL'];
+const VIZ_MODE_COUNT = 4;
 
 const $ = id => document.getElementById(id);
 const audio = $('audio');
@@ -173,6 +177,11 @@ const coverPlaceholder = $('coverPlaceholder');
 const searchInput = $('searchInput');
 const editModal = $('editModal');
 const infoBox = $('infoBox');
+const visualizerBox = $('visualizerBox');
+const progressFillEl = $('progressFill');
+const progressBarEl = $('progressBar');
+const currentTimeEl = $('currentTime');
+const durationTimeEl = $('durationTime');
 
 const state = {
   songs: [], folders: {},
@@ -182,15 +191,18 @@ const state = {
   editingSongId: -1,
   shuffle: false,
   repeat: 'off',
-  dynamicDark: true
+  dynamicDark: true,
+  vizMode: VIZ_WAVE
 };
 
 const openFolders = new Set();
+const peaksCache  = new Map();
+const freqData    = new Uint8Array(512);
 
 let colors = { fg: '#fff', accent: '#888', dim: '#555' };
 let audioCtx = null, analyser = null, timeData = null, animationId = null;
 let statusTimer = null, saveTimer = null, resizeTimer = null;
-let lastPosSent = 0;
+let lastPeakTime = 0, lastFrameTime = 0, lastProgressUpdate = 0;
 
 const fmt = s => !isFinite(s) ? '00:00'
   : `${String(Math.floor(s/60)).padStart(2,'0')}:${String(Math.floor(s%60)).padStart(2,'0')}`;
@@ -240,6 +252,40 @@ function applyWallpaperColors(hue, dark) {
   root.style.setProperty('--scrollbar-thumb', `hsl(${hue}, 68%, ${dark ? 62 : 42}%)`);
 }
 
+/* Uses Karui-style DynamicTheme: full palette, not just hue. */
+function applyDynamicTheme() {
+  let theme = null;
+  try {
+    theme = JSON.parse(__HashiruMusic.getWallpaperTheme());
+  } catch (e) {
+    console.warn('wallpaper theme parse failed', e);
+  }
+
+  if (!theme || !theme.ok) {
+    let dark = true;
+    try { dark = __HashiruMusic.getSystemDark(); } catch (e) {}
+    applyWallpaperColors(210, dark);
+    state.dynamicDark = dark;
+    if (!localStorage.getItem('music-dynamic-warned')) {
+      try { localStorage.setItem('music-dynamic-warned', '1'); } catch (e) {}
+      setTimeout(() => setStatus('WALLPAPER COLORS UNAVAILABLE', 4000), 300);
+    }
+    return;
+  }
+
+  const root = document.documentElement;
+  root.style.setProperty('--bg', theme.bg);
+  root.style.setProperty('--fg', theme.text);
+  root.style.setProperty('--panel-bg', theme.surface);
+  root.style.setProperty('--accent', theme.accent);
+  root.style.setProperty('--dim', theme.gray);
+  root.style.setProperty('--list-hover', theme.border);
+  root.style.setProperty('--scrollbar-thumb', theme.accent);
+  root.style.setProperty('--scrollbar-track', theme.surface);
+
+  state.dynamicDark = true;  // DynamicTheme always produces a dark palette
+}
+
 function themeIsLight(theme) {
   if (theme === 'dynamic') return !state.dynamicDark;
   return LIGHT_THEMES.includes(theme);
@@ -260,20 +306,7 @@ function applyTheme(v) {
   clearDynamicInlineStyles();
 
   if (v === 'dynamic') {
-    let hue = 210, dark = true;
-    try {
-      const wp = JSON.parse(__HashiruMusic.getWallpaperTheme());
-      if (wp.hue >= 0) hue = wp.hue;
-    } catch (e) {}
-    try { dark = __HashiruMusic.getSystemDark(); } catch (e) {}
-    applyWallpaperColors(hue, dark);
-    state.dynamicDark = dark;
-    try {
-      if (!localStorage.getItem('music-dynamic-warned')) {
-        localStorage.setItem('music-dynamic-warned', '1');
-        setTimeout(() => setStatus('WALLPAPER COLORS UNAVAILABLE', 4000), 300);
-      }
-    } catch (e) {}
+    applyDynamicTheme();
   }
 
   refreshColors();
@@ -457,7 +490,6 @@ function makeFolder(name, songs, folderKey, emptyMsg) {
   return det;
 }
 
-/* Song rows: single tap = play immediately. No double-tap on rows. */
 function makeSongRow(song, displayIdx) {
   const row = document.createElement('div');
   row.className = 'song-row';
@@ -479,16 +511,13 @@ function makeSongRow(song, displayIdx) {
   fav.addEventListener('click', e => { e.stopPropagation(); toggleFav(song); });
 
   row.append(name, fav);
-
   row.addEventListener('click', () => {
     if (state.editingSongId > 0) return;
     playById(song.id);
   });
-
   return row;
 }
 
-/* Info box: double-tap opens the editor for the currently playing song. */
 function setupInfoBoxDoubleTap() {
   if (!infoBox) return;
   let lastTap = 0;
@@ -503,6 +532,27 @@ function setupInfoBoxDoubleTap() {
       lastTap = now;
     }
   });
+}
+
+function setupVisualizerDoubleTap() {
+  if (!visualizerBox) return;
+  let lastTap = 0;
+  visualizerBox.addEventListener('click', () => {
+    const now = Date.now();
+    if (now - lastTap < DOUBLE_TAP_MS) {
+      lastTap = 0;
+      cycleVisualizerMode();
+    } else {
+      lastTap = now;
+    }
+  });
+}
+
+function cycleVisualizerMode() {
+  state.vizMode = (state.vizMode + 1) % VIZ_MODE_COUNT;
+  try { localStorage.setItem('music-viz-mode', String(state.vizMode)); } catch (e) {}
+  setStatus('VIS: ' + VIZ_MODE_NAMES[state.vizMode], 1200);
+  if (!state.isPlaying) drawStatic();
 }
 
 async function toggleFav(song) {
@@ -610,7 +660,6 @@ function playById(id) {
   updateNowPlaying(song);
   updateActiveRow();
   saveLast();
-  lastPosSent = 0;
 }
 
 function advanceNext(auto) {
@@ -694,11 +743,8 @@ function saveLast() {
 function startSaveTimer() { if (!saveTimer) saveTimer = setInterval(saveLast, 5000); }
 function stopSaveTimer()  { if (saveTimer) { clearInterval(saveTimer); saveTimer = null; } }
 
-function pushPosition(force) {
+function pushPosition() {
   if (!audio || !isFinite(audio.duration) || audio.duration <= 0) return;
-  const now = Date.now();
-  if (!force && (now - lastPosSent) < POS_THROTTLE) return;
-  lastPosSent = now;
   try {
     __HashiruMusic.onPosition(
       Math.round((audio.currentTime || 0) * 1000),
@@ -725,7 +771,6 @@ function restoreLast() {
     audio.removeEventListener('loadedmetadata', onMeta);
     if (lastPos > 0 && isFinite(audio.duration))
       audio.currentTime = Math.min(lastPos, audio.duration - 0.5);
-    pushPosition(true);
   });
 }
 
@@ -743,6 +788,35 @@ function initAudio() {
     } catch (e) { console.warn('audio ctx failed', e); }
   }
   if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(()=>{});
+}
+
+function getPeaks(songId) {
+  if (!peaksCache.has(songId)) {
+    peaksCache.set(songId, new Float32Array(WAVE_BUCKETS));
+  }
+  return peaksCache.get(songId);
+}
+
+function accumulatePeaks() {
+  if (!analyser || audio.paused) return;
+  if (state.currentId < 0) return;
+  if (!isFinite(audio.duration) || audio.duration <= 0) return;
+
+  const now = Date.now();
+  if (now - lastPeakTime < 200) return;
+  lastPeakTime = now;
+
+  const peaks = getPeaks(state.currentId);
+  const pos = audio.currentTime / audio.duration;
+  const bucket = Math.min(WAVE_BUCKETS - 1, Math.max(0, Math.floor(pos * WAVE_BUCKETS)));
+
+  analyser.getByteTimeDomainData(timeData);
+  let sum = 0;
+  for (let i = 0; i < timeData.length; i++) {
+    sum += Math.abs(timeData[i] - 128);
+  }
+  const avg = sum / timeData.length / 128;
+  if (avg > peaks[bucket]) peaks[bucket] = avg;
 }
 
 let cw = 0, ch = 0, cdpr = 0;
@@ -769,12 +843,7 @@ function drawStatic() {
   ctx.globalAlpha = 1;
 }
 
-function drawVisualizer() {
-  if (!analyser || !state.isPlaying) { animationId = null; drawStatic(); return; }
-  animationId = requestAnimationFrame(drawVisualizer);
-
-  ctx.clearRect(0, 0, cw, ch);
-
+function drawWave() {
   analyser.getByteTimeDomainData(timeData);
   const n = timeData.length, slice = cw / n, mid = ch / 2;
   const wave = new Path2D();
@@ -786,7 +855,6 @@ function drawVisualizer() {
     if (i === 0) { wave.moveTo(x, y); refl.moveTo(x, ch - y); }
     else { wave.lineTo(x, y); refl.lineTo(x, ch - y); }
   }
-
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   ctx.globalAlpha = 0.22; ctx.strokeStyle = colors.accent; ctx.lineWidth = 2; ctx.stroke(refl);
@@ -796,19 +864,115 @@ function drawVisualizer() {
   ctx.globalAlpha = 1; ctx.strokeStyle = colors.fg; ctx.lineWidth = 2.5; ctx.stroke(wave);
 }
 
+function drawProgressWave() {
+  if (state.currentId < 0) return;
+  const peaks = getPeaks(state.currentId);
+  const barWidth = cw / WAVE_BUCKETS;
+  const progress = (audio.duration && isFinite(audio.duration))
+    ? audio.currentTime / audio.duration : 0;
+  const mid = ch / 2;
+  const maxH = ch * 0.9;
+
+  for (let i = 0; i < WAVE_BUCKETS; i++) {
+    const played = (i / WAVE_BUCKETS) <= progress;
+    const ph = Math.max(2, peaks[i] * maxH);
+    const x = i * barWidth;
+    ctx.globalAlpha = played ? 0.95 : 0.25;
+    ctx.fillStyle = played ? colors.fg : colors.dim;
+    ctx.fillRect(x + 1, mid - ph / 2, Math.max(1, barWidth - 2), ph);
+  }
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = colors.accent;
+  ctx.fillRect(progress * cw - 1, 0, 2, ch);
+}
+
+function drawBars() {
+  analyser.getByteFrequencyData(freqData);
+  const barCount = 32;
+  const step = Math.floor(freqData.length / barCount);
+  const barWidth = cw / barCount;
+  ctx.fillStyle = colors.accent;
+  ctx.globalAlpha = 0.9;
+  for (let i = 0; i < barCount; i++) {
+    let sum = 0;
+    for (let j = 0; j < step; j++) sum += freqData[i * step + j];
+    const avg = sum / step;
+    const h = (avg / 255) * ch;
+    ctx.fillRect(i * barWidth + 2, ch - h, barWidth - 4, h);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawRadial() {
+  analyser.getByteFrequencyData(freqData);
+  const barCount = 48;
+  const step = Math.floor(freqData.length / barCount);
+  const cx = cw / 2, cy = ch / 2;
+  const baseR = Math.min(cw, ch) * 0.18;
+  const maxLen = Math.min(cw, ch) * 0.32;
+
+  ctx.lineCap = 'round';
+  ctx.lineWidth = 3;
+  for (let i = 0; i < barCount; i++) {
+    let sum = 0;
+    for (let j = 0; j < step; j++) sum += freqData[i * step + j];
+    const avg = sum / step;
+    const len = (avg / 255) * maxLen;
+    const angle = (i / barCount) * Math.PI * 2 - Math.PI / 2;
+    const x1 = cx + Math.cos(angle) * baseR;
+    const y1 = cy + Math.sin(angle) * baseR;
+    const x2 = cx + Math.cos(angle) * (baseR + len);
+    const y2 = cy + Math.sin(angle) * (baseR + len);
+    ctx.strokeStyle = colors.accent;
+    ctx.globalAlpha = 0.3 + (avg / 255) * 0.7;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawVisualizer() {
+  if (!state.isPlaying) { animationId = null; drawStatic(); return; }
+  animationId = requestAnimationFrame(drawVisualizer);
+
+  const isExpensive = (state.vizMode === VIZ_BARS || state.vizMode === VIZ_RADIAL);
+  const interval = isExpensive ? 33 : 16;
+  const now = performance.now();
+  if (now - lastFrameTime < interval) return;
+  lastFrameTime = now;
+
+  ctx.clearRect(0, 0, cw, ch);
+
+  if (!analyser) return;
+  switch (state.vizMode) {
+    case VIZ_WAVE:     drawWave(); break;
+    case VIZ_PROGRESS: drawProgressWave(); break;
+    case VIZ_BARS:     drawBars(); break;
+    case VIZ_RADIAL:   drawRadial(); break;
+  }
+}
+
 function setupAudio() {
   audio.addEventListener('play', () => {
     state.isPlaying = true;
     $('playBtn').innerHTML = '&#10074;&#10074;';
     initAudio();
     resizeCanvas();
-    if (!animationId) drawVisualizer();
+    if (!animationId) { lastFrameTime = 0; drawVisualizer(); }
     startSaveTimer();
-    lastPosSent = 0;
-    pushPosition(true);
+
+    // Combined bridge call — title, artist, id, position, duration in one hop.
     const s = state.songs[state.currentIndex];
-    if (s) try { __HashiruMusic.onPlay(s.title || '', s.artist || '', s.id); } catch (e) {}
+    const pos = isFinite(audio.currentTime) ? Math.round(audio.currentTime * 1000) : 0;
+    const dur = isFinite(audio.duration)    ? Math.round(audio.duration * 1000)    : 0;
+    if (s) {
+      try { __HashiruMusic.onPlay(s.title || '', s.artist || '', s.id, pos, dur); }
+      catch (e) {}
+    }
   });
+
   audio.addEventListener('pause', () => {
     state.isPlaying = false;
     $('playBtn').innerHTML = '&#9654;';
@@ -816,21 +980,30 @@ function setupAudio() {
     drawStatic();
     try { __HashiruMusic.onPause(); } catch (e) {}
     saveLast();
-    pushPosition(true);
+    pushPosition();  // freeze seekbar at the pause position
     stopSaveTimer();
     if (audioCtx && audioCtx.state === 'running') audioCtx.suspend().catch(()=>{});
   });
+
   audio.addEventListener('ended', () => advanceNext(true));
+
   audio.addEventListener('loadedmetadata', () => {
-    $('durationTime').textContent = fmt(audio.duration);
-    pushPosition(true);
+    durationTimeEl.textContent = fmt(audio.duration);
   });
+
+  // DOM throttled to 10 Hz — decoupled from timeupdate's native rate.
   audio.addEventListener('timeupdate', () => {
-    if (audio.duration && isFinite(audio.duration)) {
-      $('progressFill').style.width = (audio.currentTime / audio.duration * 100) + '%';
-      $('currentTime').textContent = fmt(audio.currentTime);
+    const now = performance.now();
+    if (now - lastProgressUpdate > 100) {
+      lastProgressUpdate = now;
+      if (audio.duration && isFinite(audio.duration)) {
+        progressFillEl.style.width = (audio.currentTime / audio.duration * 100) + '%';
+        currentTimeEl.textContent = fmt(audio.currentTime);
+      }
     }
-    pushPosition(false);
+    if (state.vizMode === VIZ_PROGRESS) {
+      accumulatePeaks();
+    }
   });
 }
 
@@ -840,6 +1013,7 @@ function setupVisibilityHandling() {
       if (animationId) { cancelAnimationFrame(animationId); animationId = null; }
     } else if (state.isPlaying && analyser && !animationId) {
       resizeCanvas();
+      lastFrameTime = 0;
       drawVisualizer();
     }
   });
@@ -904,12 +1078,12 @@ function setupUI() {
   $('nextBtn').onclick = playNext;
   $('prevBtn').onclick = playPrev;
 
-  $('progressBar').addEventListener('click', e => {
+  progressBarEl.addEventListener('click', e => {
     if (!audio.duration || !isFinite(audio.duration)) return;
     const r = e.currentTarget.getBoundingClientRect();
     const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
     audio.currentTime = pct * audio.duration;
-    pushPosition(true);
+    pushPosition();
   });
 
   $('coverBox').addEventListener('click', () => {
@@ -959,13 +1133,13 @@ window.__hashiruMusic = {
   cmd: (c, arg) => {
     if (c === 'play') { if (audio.src) audio.play().catch(()=>{}); }
     else if (c === 'pause') audio.pause();
-    else if (c === 'stop') { audio.pause(); try { audio.currentTime = 0; } catch (e) {} pushPosition(true); }
+    else if (c === 'stop') { audio.pause(); try { audio.currentTime = 0; } catch (e) {} pushPosition(); }
     else if (c === 'prev') playPrev();
     else if (c === 'next') playNext();
     else if (c === 'seek') {
       if (isFinite(arg) && arg >= 0 && isFinite(audio.duration) && audio.duration > 0) {
         audio.currentTime = Math.min(audio.duration, arg / 1000);
-        pushPosition(true);
+        pushPosition();
       }
     }
   },
@@ -985,8 +1159,13 @@ async function init() {
   loadPlaybackModes();
   updateShuffleBtn();
   updateRepeatBtn();
+
+  const savedViz = parseInt(localStorage.getItem('music-viz-mode') || '0', 10);
+  state.vizMode = (savedViz >= 0 && savedViz < VIZ_MODE_COUNT) ? savedViz : VIZ_WAVE;
+
   setupUI();
   setupInfoBoxDoubleTap();
+  setupVisualizerDoubleTap();
   setupAudio();
   setupVisibilityHandling();
   resizeCanvas();

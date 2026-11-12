@@ -9,8 +9,8 @@ android {
         applicationId "io.github.ronynn.hashiru"
         minSdkVersion 21
         targetSdkVersion 36
-        versionCode 3
-        versionName "1.3"
+        versionCode 4
+        versionName "1.4"
     }
     
     signingConfigs {
