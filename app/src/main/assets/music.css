@@ -57,113 +57,36 @@
   --scrollbar-thumb: #ff6600; --scrollbar-track: #2a2a2a;
 }
 
-:root[data-theme="bakelite"] {
-  --bg: #241008; --fg: #f2dcc0; --accent: #e8a040; --dim: #7a5a40;
-  --panel-bg: #3a1e10; --list-hover: #4a2818;
-  --scrollbar-thumb: #e8a040; --scrollbar-track: #241008;
-}
-
-:root[data-theme="wood"] {
-  --bg: #2a1a10; --fg: #f0dcc0; --accent: #d4a860; --dim: #7a5030;
-  --panel-bg: #3a2414; --list-hover: #4a2e1a;
-  --scrollbar-thumb: #d4a860; --scrollbar-track: #2a1a10;
-}
-
 :root[data-theme="glass-light"] {
   --bg: transparent; --fg: #1a1a2e; --accent: #d946ef; --dim: #8888aa;
-  --panel-bg: rgba(255,255,255,0.35); --list-hover: rgba(255,255,255,0.25);
-  --scrollbar-thumb: rgba(217,70,239,0.8); --scrollbar-track: rgba(255,255,255,0.1);
+  --panel-bg: rgba(255,255,255,0.42);
+  --list-hover: rgba(255,255,255,0.35);
+  --scrollbar-thumb: rgba(217,70,239,0.8);
+  --scrollbar-track: rgba(255,255,255,0.1);
 }
 
-:root[data-theme="glass-dark"] {
-  --bg: transparent; --fg: #f0f0ff; --accent: #7ad3ff; --dim: #8888aa;
-  --panel-bg: rgba(30,30,60,0.35); --list-hover: rgba(60,60,90,0.35);
-  --scrollbar-thumb: rgba(122,211,255,0.8); --scrollbar-track: rgba(0,0,0,0.2);
+/* ---------- Glass-light background (pure gradients — no blur filter) ---------- */
+:root[data-theme="glass-light"] {
+  background:
+    radial-gradient(circle 360px at 15% 15%,
+      rgba(255,107,157,0.70) 0%,
+      rgba(192,132,252,0.40) 35%,
+      transparent 72%),
+    radial-gradient(circle 340px at 85% 85%,
+      rgba(251,191,36,0.62) 0%,
+      rgba(245,158,11,0.30) 38%,
+      transparent 72%),
+    linear-gradient(135deg, #f5f0ff 0%, #e8f0ff 100%);
 }
+:root[data-theme="glass-light"] body { background: transparent; }
 
-/* ---------- Glass: root background + blurred blooms ---------- */
-:root[data-theme="glass-light"] { background: #f0e8ff; }
-:root[data-theme="glass-dark"]  { background: #06060f; }
-:root[data-theme="glass-light"] body,
-:root[data-theme="glass-dark"]  body { background: transparent; }
-
-:root[data-theme="glass-light"] body::before {
-  content: '';
-  position: fixed;
-  top: 15%;
-  left: 15%;
-  width: 360px; height: 360px;
-  background: radial-gradient(circle,
-    #ff6b9d 0%, #c084fc 40%, #a78bfa 70%, transparent 100%);
-  border-radius: 50%;
-  filter: blur(50px);
-  z-index: -1;
-  pointer-events: none;
-}
-:root[data-theme="glass-light"] body::after {
-  content: '';
-  position: fixed;
-  bottom: 12%;
-  right: 12%;
-  width: 340px; height: 340px;
-  background: radial-gradient(circle,
-    #fbbf24 0%, #f59e0b 40%, #fb7185 75%, transparent 100%);
-  border-radius: 50%;
-  filter: blur(60px);
-  z-index: -1;
-  pointer-events: none;
-}
-
-:root[data-theme="glass-dark"] body::before {
-  content: '';
-  position: fixed;
-  top: 12%;
-  left: 20%;
-  width: 420px; height: 420px;
-  background: radial-gradient(circle,
-    #ff2d75 0%, #a855f7 35%, #3b82f6 70%, transparent 100%);
-  border-radius: 50%;
-  filter: blur(60px);
-  z-index: -1;
-  pointer-events: none;
-}
-:root[data-theme="glass-dark"] body::after {
-  content: '';
-  position: fixed;
-  bottom: 15%;
-  right: 12%;
-  width: 380px; height: 380px;
-  background: radial-gradient(circle,
-    #14b8a6 0%, #06b6d4 45%, #8b5cf6 80%, transparent 100%);
-  border-radius: 50%;
-  filter: blur(70px);
-  z-index: -1;
-  pointer-events: none;
-}
-
-/* ---------- Physical themes: body backgrounds ---------- */
+/* ---------- Physical theme: chrome body ---------- */
 :root[data-theme="chrome"] body {
   background:
     repeating-linear-gradient(90deg,
       rgba(255,255,255,0.025) 0px, rgba(255,255,255,0.025) 1px,
       transparent 1px, transparent 3px),
     linear-gradient(180deg, #3a3a3a 0%, #1a1a1a 40%, #2a2a2a 100%);
-}
-
-:root[data-theme="bakelite"] body {
-  background:
-    radial-gradient(ellipse at 50% 0%, rgba(200,140,80,0.15) 0%, transparent 60%),
-    linear-gradient(180deg, #3a1e10 0%, #180a04 100%);
-}
-
-:root[data-theme="wood"] body {
-  background:
-    repeating-linear-gradient(90deg,
-      rgba(0,0,0,0.15) 0px, rgba(0,0,0,0.15) 1px,
-      transparent 1px, transparent 4px,
-      rgba(0,0,0,0.10) 4px, rgba(0,0,0,0.10) 5px,
-      transparent 5px, transparent 9px),
-    linear-gradient(180deg, #4a2e1a 0%, #2a1a10 100%);
 }
 
 /* ---------- Fonts ---------- */
@@ -226,17 +149,11 @@ legend {
 }
 :root[data-theme="winamp"] legend { color: #000080; background: #c0c0c0; }
 
-/* Hide settings + playlist legends on "immersive" themes */
+/* Hide settings + playlist legends on chrome & glass-light */
 :root[data-theme="chrome"] fieldset.settings-fieldset > legend,
 :root[data-theme="chrome"] fieldset.playlist-fieldset > legend,
-:root[data-theme="bakelite"] fieldset.settings-fieldset > legend,
-:root[data-theme="bakelite"] fieldset.playlist-fieldset > legend,
-:root[data-theme="wood"] fieldset.settings-fieldset > legend,
-:root[data-theme="wood"] fieldset.playlist-fieldset > legend,
 :root[data-theme="glass-light"] fieldset.settings-fieldset > legend,
-:root[data-theme="glass-light"] fieldset.playlist-fieldset > legend,
-:root[data-theme="glass-dark"] fieldset.settings-fieldset > legend,
-:root[data-theme="glass-dark"] fieldset.playlist-fieldset > legend {
+:root[data-theme="glass-light"] fieldset.playlist-fieldset > legend {
   display: none;
 }
 
@@ -276,7 +193,6 @@ button:active { transform: scale(0.97); }
 .action-row > button,
 .action-row .select-wrapper { height: 32px; }
 
-/* Rescan button — match dropdown text size */
 .action-row > button {
   font-size: 10px;
   letter-spacing: .3px;
@@ -449,12 +365,8 @@ button:active { transform: scale(0.97); }
   border-color: #000000 #ffffff #ffffff #000000;
 }
 
-/* Remove the internal cover divider in immersive / physical themes */
 :root[data-theme="chrome"] .cover,
-:root[data-theme="bakelite"] .cover,
-:root[data-theme="wood"] .cover,
-:root[data-theme="glass-light"] .cover,
-:root[data-theme="glass-dark"] .cover {
+:root[data-theme="glass-light"] .cover {
   border-right: none;
 }
 
@@ -502,7 +414,6 @@ canvas { width: 100%; height: 100%; display: block; }
 }
 .player-controls button.play-btn:hover { background: var(--fg); color: var(--bg); }
 
-/* Mode buttons */
 .player-controls button.mode-btn {
   font-size: 16px;
   color: var(--dim);
@@ -746,344 +657,117 @@ canvas { width: 100%; height: 100%; display: block; }
 }
 
 /* =========================================================
-   BAKELITE — vintage radio plastic
+   GLASS LIGHT — fast, neomorphic buttons, pure gradient bg
    ========================================================= */
-:root[data-theme="bakelite"] fieldset {
-  background: linear-gradient(180deg, #4a2818 0%, #2a1408 100%);
-  border: 2px solid #6a4020;
-  border-radius: 8px;
+:root[data-theme="glass-light"] fieldset {
+  background: rgba(255,255,255,0.42);
+  border: 1px solid rgba(255,255,255,0.7);
+  border-radius: 12px;
   box-shadow:
-    inset 0 2px 0 rgba(255,220,180,0.15),
-    inset 0 -2px 0 rgba(0,0,0,0.6),
-    0 4px 10px rgba(0,0,0,0.6);
+    0 6px 24px rgba(120,100,180,0.14),
+    inset 0 1px 0 rgba(255,255,255,0.85);
+  transition: none;
 }
-:root[data-theme="bakelite"] legend {
-  color: #e8a040;
-  text-shadow: 0 0 6px rgba(232,160,64,0.5);
-}
-:root[data-theme="bakelite"] button {
-  background: linear-gradient(180deg, #4a2818 0%, #1a0e06 100%);
-  border: 1px solid #6a4020;
-  border-radius: 4px;
-  color: #f2dcc0;
-  box-shadow:
-    inset 0 1px 0 rgba(255,220,180,0.2),
-    inset 0 -1px 0 rgba(0,0,0,0.4),
-    0 2px 3px rgba(0,0,0,0.5);
-  text-shadow: 0 1px 0 rgba(0,0,0,0.6);
-}
-:root[data-theme="bakelite"] button:hover {
-  background: linear-gradient(180deg, #5a321e 0%, #2a1810 100%);
-  color: #fff;
-}
-:root[data-theme="bakelite"] button:active {
-  background: linear-gradient(180deg, #1a0e06 0%, #3a1e10 100%);
-  box-shadow: inset 0 2px 4px rgba(0,0,0,0.7);
-  transform: none;
-}
-:root[data-theme="bakelite"] .select-wrapper select {
-  background: linear-gradient(180deg, #4a2818 0%, #1a0e06 100%);
-  border: 1px solid #6a4020;
-  color: #f2dcc0;
-  border-radius: 4px;
-}
-:root[data-theme="bakelite"] .info-box {
-  background: linear-gradient(180deg, #1a0e06 0%, #0a0503 100%);
-  border: 2px solid #6a4020;
-  box-shadow:
-    inset 0 0 24px rgba(255,200,100,0.15),
-    inset 0 0 60px rgba(0,0,0,0.6);
-}
-:root[data-theme="bakelite"] .info .title {
-  color: #ffd680;
-  text-shadow: 0 0 8px rgba(255,200,100,0.5);
-  font-family: monospace;
-  letter-spacing: .5px;
-}
-:root[data-theme="bakelite"] .info .artist,
-:root[data-theme="bakelite"] .info .album {
-  color: #e8a040;
-  text-shadow: 0 0 4px rgba(232,160,64,0.4);
-  font-family: monospace;
-}
-:root[data-theme="bakelite"] .progress-bar {
-  background: #0a0503;
-  border: 1px solid #4a2818;
-  box-shadow: inset 0 0 8px rgba(255,200,100,0.2);
-}
-:root[data-theme="bakelite"] .progress-fill {
-  background: linear-gradient(180deg, #ffd680, #e8a040);
-  box-shadow: 0 0 8px rgba(255,200,100,0.5);
-}
-:root[data-theme="bakelite"] .song-row.active {
-  background: linear-gradient(180deg, #e8a040, #a06020);
-  color: #1a0e06;
-  text-shadow: 0 1px 0 rgba(255,255,255,0.2);
-}
-:root[data-theme="bakelite"] .player-controls button.play-btn {
-  background: linear-gradient(180deg, #e8a040 0%, #a06020 100%);
-  border: 1px solid #ffd680;
-  color: #1a0e06;
-  box-shadow:
-    0 0 16px rgba(232,160,64,0.6),
-    inset 0 1px 0 rgba(255,255,255,0.3);
-}
-:root[data-theme="bakelite"] .player-controls button.play-btn:hover {
-  background: linear-gradient(180deg, #ffd680 0%, #e8a040 100%);
-  color: #1a0e06;
-}
-:root[data-theme="bakelite"] .player-controls button.mode-btn.active {
-  color: #e8a040;
-  text-shadow: 0 0 6px rgba(232,160,64,0.5);
-}
-:root[data-theme="bakelite"] .toast {
-  background: #1a0e06; color: #ffd680;
-  border-color: #e8a040;
-  text-shadow: 0 0 6px rgba(255,200,100,0.5);
-}
-
-/* =========================================================
-   WOOD — walnut grain
-   ========================================================= */
-:root[data-theme="wood"] fieldset {
-  background:
-    repeating-linear-gradient(90deg,
-      rgba(0,0,0,0.20) 0px, rgba(0,0,0,0.20) 1px,
-      transparent 1px, transparent 4px,
-      rgba(0,0,0,0.12) 4px, rgba(0,0,0,0.12) 5px,
-      transparent 5px, transparent 9px),
-    linear-gradient(180deg, #4a2e1a 0%, #2a1a10 100%);
-  border: 2px solid #5a3a1e;
-  border-radius: 6px;
-  box-shadow:
-    inset 0 1px 0 rgba(255,220,180,0.2),
-    inset 0 -1px 0 rgba(0,0,0,0.5),
-    0 3px 8px rgba(0,0,0,0.6);
-}
-:root[data-theme="wood"] legend {
-  color: #d4a860;
-  text-shadow: 0 0 6px rgba(212,168,96,0.5);
-}
-:root[data-theme="wood"] button {
-  background:
-    repeating-linear-gradient(90deg,
-      rgba(0,0,0,0.18) 0px, rgba(0,0,0,0.18) 1px,
-      transparent 1px, transparent 4px,
-      rgba(0,0,0,0.10) 4px, rgba(0,0,0,0.10) 5px,
-      transparent 5px, transparent 9px),
-    linear-gradient(180deg, #4a2e1a 0%, #1a0e06 100%);
-  border: 1px solid #5a3a1e;
-  border-radius: 3px;
-  color: #f0dcc0;
-  box-shadow:
-    inset 0 1px 0 rgba(255,220,180,0.2),
-    0 2px 3px rgba(0,0,0,0.4);
-  text-shadow: 0 1px 0 rgba(0,0,0,0.6);
-}
-:root[data-theme="wood"] button:hover {
-  background:
-    repeating-linear-gradient(90deg,
-      rgba(0,0,0,0.18) 0px, rgba(0,0,0,0.18) 1px,
-      transparent 1px, transparent 4px,
-      rgba(0,0,0,0.10) 4px, rgba(0,0,0,0.10) 5px,
-      transparent 5px, transparent 9px),
-    linear-gradient(180deg, #5a3a1e 0%, #2a1810 100%);
-  color: #fff;
-}
-:root[data-theme="wood"] button:active {
-  box-shadow: inset 0 3px 6px rgba(0,0,0,0.7);
-  transform: none;
-}
-:root[data-theme="wood"] .select-wrapper select {
-  background: linear-gradient(180deg, #4a2e1a 0%, #1a0e06 100%);
-  border: 1px solid #5a3a1e;
-  color: #f0dcc0;
-  border-radius: 3px;
-}
-:root[data-theme="wood"] .info-box {
-  background: linear-gradient(180deg, #1a0e06 0%, #0a0503 100%);
-  border: 2px solid #5a3a1e;
-  box-shadow: inset 0 0 30px rgba(255,180,100,0.15);
-}
-:root[data-theme="wood"] .info .title {
-  color: #ffd680;
-  text-shadow: 0 0 8px rgba(255,180,100,0.4);
-}
-:root[data-theme="wood"] .info .artist,
-:root[data-theme="wood"] .info .album {
-  color: #d4a860;
-  text-shadow: 0 0 4px rgba(212,168,96,0.4);
-}
-:root[data-theme="wood"] .progress-bar {
-  background: #0a0503;
-  border: 1px solid #4a2e1a;
-  box-shadow: inset 0 0 8px rgba(255,180,100,0.15);
-}
-:root[data-theme="wood"] .progress-fill {
-  background: linear-gradient(180deg, #ffd680, #d4a860);
-  box-shadow: 0 0 8px rgba(255,180,100,0.4);
-}
-:root[data-theme="wood"] .song-row.active {
-  background: linear-gradient(180deg, #d4a860, #7a5030);
-  color: #1a0e06;
-}
-:root[data-theme="wood"] .player-controls button.play-btn {
-  background: linear-gradient(180deg, #d4a860 0%, #7a5030 100%);
-  border: 1px solid #ffd680;
-  color: #1a0e06;
-  box-shadow:
-    0 0 16px rgba(212,168,96,0.5),
-    inset 0 1px 0 rgba(255,255,255,0.3);
-}
-:root[data-theme="wood"] .player-controls button.play-btn:hover {
-  background: linear-gradient(180deg, #ffd680 0%, #d4a860 100%);
-  color: #1a0e06;
-}
-:root[data-theme="wood"] .player-controls button.mode-btn.active {
-  color: #d4a860;
-  text-shadow: 0 0 6px rgba(212,168,96,0.5);
-}
-:root[data-theme="wood"] .toast {
-  background: #1a0e06; color: #ffd680;
-  border-color: #d4a860;
-  text-shadow: 0 0 6px rgba(255,180,100,0.4);
-}
-
-/* =========================================================
-   GLASS LIGHT / DARK — frosted panels over blooms
-   ========================================================= */
-:root[data-theme="glass-light"] fieldset,
-:root[data-theme="glass-dark"] fieldset {
-  backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
-  border: 1px solid rgba(255,255,255,0.5);
-  background: rgba(255,255,255,0.22);
-  box-shadow:
-    0 8px 32px rgba(0,0,0,0.1),
-    inset 0 1px 0 rgba(255,255,255,0.6);
-}
-:root[data-theme="glass-dark"] fieldset {
-  border-color: rgba(255,255,255,0.15);
-  background: rgba(20,20,50,0.35);
-  box-shadow:
-    0 8px 32px rgba(0,0,0,0.4),
-    inset 0 1px 0 rgba(255,255,255,0.12);
-}
-
-:root[data-theme="glass-light"] legend,
-:root[data-theme="glass-dark"] legend {
+:root[data-theme="glass-light"] legend {
   background: transparent;
   color: var(--accent);
 }
 
-:root[data-theme="glass-light"] button,
-:root[data-theme="glass-dark"] button {
-  background: rgba(255,255,255,0.25);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(255,255,255,0.45);
-  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-  color: var(--fg);
-  transition: background-color .12s, color .12s, transform .1s, box-shadow .12s;
+/* Neomorphic glass buttons — same size, spaced */
+:root[data-theme="glass-light"] .action-row { gap: 8px; }
+:root[data-theme="glass-light"] .playlist-header { gap: 8px; }
+:root[data-theme="glass-light"] .playlist-header button.search-btn {
+  flex: 1 1 0;
+  font-size: 11px;
 }
-:root[data-theme="glass-dark"] button {
-  background: rgba(255,255,255,0.06);
-  border-color: rgba(255,255,255,0.15);
+
+:root[data-theme="glass-light"] button,
+:root[data-theme="glass-light"] .select-wrapper select {
+  background: rgba(255,255,255,0.55);
+  border: 1px solid rgba(255,255,255,0.85);
+  color: var(--fg);
+  border-radius: 8px;
+  box-shadow:
+    2px 2px 6px rgba(120,100,180,0.18),
+    -2px -2px 6px rgba(255,255,255,0.75);
+  transition: background-color .15s, color .15s,
+              transform .12s, box-shadow .15s;
 }
 :root[data-theme="glass-light"] button:hover,
-:root[data-theme="glass-dark"] button:hover {
-  background: rgba(255,255,255,0.4);
+:root[data-theme="glass-light"] .select-wrapper select:hover {
+  background: rgba(255,255,255,0.72);
   color: var(--fg);
-}
-:root[data-theme="glass-dark"] button:hover {
-  background: rgba(255,255,255,0.14);
 }
 :root[data-theme="glass-light"] button:active {
-  transform: scale(0.96);
+  background: rgba(255,255,255,0.4);
   box-shadow:
-    inset 2px 2px 6px rgba(0,0,0,0.18),
-    inset -1px -1px 3px rgba(255,255,255,0.4);
+    inset 2px 2px 5px rgba(120,100,180,0.28),
+    inset -2px -2px 5px rgba(255,255,255,0.65);
+  transform: scale(0.97);
 }
-:root[data-theme="glass-dark"] button:active {
-  transform: scale(0.96);
+/* Keep active-state styling coherent */
+:root[data-theme="glass-light"] .playlist-header button.active {
+  background: var(--accent);
+  color: #fff;
   box-shadow:
-    inset 2px 2px 6px rgba(0,0,0,0.5),
-    inset -1px -1px 3px rgba(255,255,255,0.1);
+    2px 2px 6px rgba(120,100,180,0.28),
+    -2px -2px 6px rgba(255,255,255,0.6);
 }
 
-:root[data-theme="glass-light"] .select-wrapper select,
-:root[data-theme="glass-dark"] .select-wrapper select {
-  background: rgba(255,255,255,0.25);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(255,255,255,0.45);
-  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-  color: var(--fg);
-}
-:root[data-theme="glass-dark"] .select-wrapper select {
-  background: rgba(255,255,255,0.06);
-  border-color: rgba(255,255,255,0.15);
-}
-
-:root[data-theme="glass-light"] .info-box,
-:root[data-theme="glass-dark"] .info-box {
-  background: rgba(255,255,255,0.25);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border: 1px solid rgba(255,255,255,0.5);
+/* Inset screen for the info box */
+:root[data-theme="glass-light"] .info-box {
+  background: rgba(255,255,255,0.5);
+  border: 1px solid rgba(255,255,255,0.8);
+  border-radius: 10px;
   box-shadow:
-    0 6px 20px rgba(0,0,0,0.1),
-    inset 0 1px 0 rgba(255,255,255,0.5);
+    inset 3px 3px 8px rgba(120,100,180,0.15),
+    inset -3px -3px 8px rgba(255,255,255,0.75);
 }
-:root[data-theme="glass-dark"] .info-box {
-  background: rgba(20,20,50,0.4);
-  border-color: rgba(255,255,255,0.15);
+:root[data-theme="glass-light"] .progress-bar {
+  background: rgba(255,255,255,0.4);
+  border: 1px solid rgba(255,255,255,0.75);
   box-shadow:
-    0 6px 20px rgba(0,0,0,0.4),
-    inset 0 1px 0 rgba(255,255,255,0.1);
+    inset 2px 2px 4px rgba(120,100,180,0.18),
+    inset -1px -1px 3px rgba(255,255,255,0.6);
 }
-
-:root[data-theme="glass-light"] .progress-bar,
-:root[data-theme="glass-dark"] .progress-bar {
-  background: rgba(0,0,0,0.1);
-  border: 1px solid rgba(0,0,0,0.15);
-}
-:root[data-theme="glass-dark"] .progress-bar {
-  background: rgba(0,0,0,0.3);
-  border-color: rgba(255,255,255,0.15);
-}
-
-:root[data-theme="glass-light"] .song-row.active,
-:root[data-theme="glass-dark"] .song-row.active {
+:root[data-theme="glass-light"] .song-row.active {
   background: var(--accent);
   color: #fff;
 }
-
-:root[data-theme="glass-light"] .toast,
-:root[data-theme="glass-dark"] .toast {
-  background: rgba(255,255,255,0.4);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border-color: rgba(255,255,255,0.5);
+:root[data-theme="glass-light"] .song-row .fav-btn {
+  box-shadow: none;
+  background: transparent;
+  border: 2px solid currentColor;
+  border-radius: 0;
+}
+:root[data-theme="glass-light"] .player-controls button {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+:root[data-theme="glass-light"] .player-controls button.play-btn {
+  background: rgba(255,255,255,0.55);
+  border: 1px solid rgba(255,255,255,0.85);
+  border-radius: 50%;
+  box-shadow:
+    2px 2px 6px rgba(120,100,180,0.2),
+    -2px -2px 6px rgba(255,255,255,0.75);
+}
+:root[data-theme="glass-light"] .player-controls button.play-btn:active {
+  box-shadow:
+    inset 2px 2px 5px rgba(120,100,180,0.3),
+    inset -2px -2px 5px rgba(255,255,255,0.6);
+  transform: scale(0.95);
+}
+:root[data-theme="glass-light"] .toast {
+  background: rgba(255,255,255,0.6);
+  border: 1px solid rgba(255,255,255,0.85);
   color: var(--fg);
 }
-:root[data-theme="glass-dark"] .toast {
-  background: rgba(30,30,60,0.6);
-  border-color: rgba(255,255,255,0.15);
-}
-
-:root[data-theme="glass-light"] .modal,
-:root[data-theme="glass-dark"] .modal {
-  backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
-  border: 1px solid rgba(255,255,255,0.5);
-  background: rgba(255,255,255,0.4);
-  box-shadow: 0 12px 40px rgba(0,0,0,0.2);
-}
-:root[data-theme="glass-dark"] .modal {
-  background: rgba(20,20,50,0.55);
-  border-color: rgba(255,255,255,0.15);
-  box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+:root[data-theme="glass-light"] .modal {
+  background: rgba(255,255,255,0.7);
+  border: 1px solid rgba(255,255,255,0.85);
+  box-shadow: 0 12px 40px rgba(120,100,180,0.25);
 }
 
 /* ---------- Responsive ---------- */

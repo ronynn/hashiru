@@ -16,39 +16,38 @@
         <button id="rescanBtn">RESCAN</button>
         <div class="select-wrapper">
           <select id="fontPicker">
-            <optgroup label="SANS">
               <option value="sans">SANS</option>
               <option value="sans-light">SANS LIGHT</option>
               <option value="sans-serif-condensed">CONDENSED</option>
-            </optgroup>
-            <optgroup label="SERIF">
               <option value="serif">SERIF</option>
-            </optgroup>
-            <optgroup label="MONO">
               <option value="mono">MONO</option>
-            </optgroup>
           </select>
         </div>
         <div class="select-wrapper">
           <select id="themePicker">
-            <option value="default">DEFAULT</option>
-            <option value="gruvbox">GRUVBOX</option>
-            <option value="nord">NORD</option>
-            <option value="dracula">DRACULA</option>
-            <option value="tokyo">TOKYO</option>
-            <option value="light">LIGHT</option>
-            <option value="solar">SOLAR</option>
-            <option value="dynamic">DYNAMIC</option>
-            <option value="winamp">98</option>
-            <option value="monokai">MONOKAI</option>
-            <option value="crt-amber">CRT AMBER</option>
-            <option value="forest">FOREST</option>
-            <option value="ev-light">EV LIGHT</option>
-            <option value="chrome">CHROME</option>
-            <option value="bakelite">BAKELITE</option>
-            <option value="wood">WOOD</option>
-            <option value="glass-light">GLASS LIGHT</option>
-            <option value="glass-dark">GLASS DARK</option>
+            <optgroup label="DARK">
+              <option value="default">DEFAULT</option>
+              <option value="gruvbox">GRUVBOX</option>
+              <option value="nord">NORD</option>
+              <option value="dracula">DRACULA</option>
+              <option value="tokyo">TOKYO</option>
+              <option value="monokai">MONOKAI</option>
+              <option value="crt-amber">CRT AMBER</option>
+              <option value="forest">FOREST</option>
+            </optgroup>
+            <optgroup label="LIGHT">
+              <option value="light">LIGHT</option>
+              <option value="solar">SOLAR</option>
+              <option value="ev-light">EV LIGHT</option>
+            </optgroup>
+            <optgroup label="RETRO">
+              <option value="winamp">98</option>
+              <option value="chrome">CHROME</option>
+            </optgroup>
+            <optgroup label="SPECIAL">
+              <option value="dynamic">DYNAMIC</option>
+              <option value="glass-light">GLASS LIGHT</option>
+            </optgroup>
           </select>
         </div>
       </div>
@@ -122,7 +121,7 @@
 (function(){
 'use strict';
 
-const THEME_VALUES = ['default','gruvbox','nord','dracula','tokyo','light','solar','dynamic','winamp','monokai','crt-amber','forest','ev-light','chrome','bakelite','wood','glass-light','glass-dark'];
+const THEME_VALUES = ['default','gruvbox','nord','dracula','tokyo','light','solar','dynamic','winamp','monokai','crt-amber','forest','ev-light','chrome','glass-light'];
 const FONT_VALUES  = ['sans','sans-light','sans-serif-condensed','serif','mono'];
 const HISTORY_MAX  = 50;
 
@@ -222,7 +221,6 @@ function applyTheme(v) {
     } catch (e) {}
     if (!applied) {
       applyWallpaperColors(210, window.matchMedia('(prefers-color-scheme: dark)').matches);
-      // Announce once ever
       try {
         if (!localStorage.getItem('music-dynamic-warned')) {
           localStorage.setItem('music-dynamic-warned', '1');
@@ -244,7 +242,6 @@ function applyFont(v) {
   try { localStorage.setItem('music-font', v); } catch (e) {}
 }
 
-// ---------- Playback modes ----------
 function savePlaybackModes() {
   try {
     localStorage.setItem('music-shuffle', state.shuffle ? '1' : '0');
@@ -270,7 +267,6 @@ function updateRepeatBtn() {
   btn.classList.toggle('repeat-one', state.repeat === 'one');
 }
 
-// ---------- History ----------
 function addToHistory(songId) {
   try {
     let history = JSON.parse(localStorage.getItem('music-history') || '[]');
@@ -289,7 +285,6 @@ function getHistory() {
   } catch (e) { return []; }
 }
 
-// ---------- Library ----------
 async function loadLibrary() {
   setStatus('SCANNING…');
   try {
@@ -321,7 +316,6 @@ function rebuildFolders() {
   state.folders = ordered;
 }
 
-// ---------- Rendering ----------
 function renderList() {
   playlistEl.replaceChildren();
   if (!state.hasPermission) return renderPermsEmpty();
@@ -495,7 +489,6 @@ async function toggleFav(song) {
   }
 }
 
-// ---------- Focus current ----------
 function focusCurrent() {
   if (state.currentId < 0) return;
   const active = playlistEl.querySelector('.song-row.active');
@@ -507,7 +500,6 @@ function focusCurrent() {
   }, 60);
 }
 
-// ---------- Edit modal ----------
 async function openEditModal(song) {
   state.editingSongId = song.id;
   $('editTitle').value  = song.title  || '';
@@ -567,7 +559,6 @@ async function saveEditModal() {
   closeEditModal();
 }
 
-// ---------- Playback ----------
 function playById(id) {
   const idx = state.songs.findIndex(s => s.id === id);
   if (idx < 0) return;
@@ -678,7 +669,6 @@ function restoreLast() {
   });
 }
 
-// ---------- Audio ----------
 function initAudio() {
   if (!audioCtx) {
     try {
