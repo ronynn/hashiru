@@ -30,7 +30,6 @@ import android.webkit.WebViewClient;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -46,6 +45,7 @@ public class MusicActivity extends Activity {
     private long pendingPlayId = -1;
     private long pendingCoverSongId = -1;
     private boolean permissionRequested = false;
+    private boolean systemBarsLight = false;
 
     private final BroadcastReceiver mediaCmdReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context ctx, Intent intent) {
@@ -58,7 +58,6 @@ public class MusicActivity extends Activity {
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         setContentView(R.layout.activity_music);
-        applySystemBars(getResources().getConfiguration().orientation);
 
         web = findViewById(R.id.web);
         web.setBackgroundColor(0xFF111111);
@@ -97,10 +96,17 @@ public class MusicActivity extends Activity {
             return;
         }
 
+        applySystemBars(getResources().getConfiguration().orientation);
+
         handleAudioIntent(getIntent());
         requestPerms();
 
         web.loadUrl("http://127.0.0.1:" + server.getListeningPort() + "/_music/");
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        applySystemBars(getResources().getConfiguration().orientation);
     }
 
     @Override public void onConfigurationChanged(Configuration cfg) {
@@ -112,20 +118,28 @@ public class MusicActivity extends Activity {
         Window win = getWindow();
         View decor = win.getDecorView();
         boolean portrait = orientation == Configuration.ORIENTATION_PORTRAIT;
-        int bg = 0xFF111111;
 
         win.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
 
         if (portrait) {
-            win.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
-            win.setStatusBarColor(bg);
-            win.setNavigationBarColor(bg);
-            decor.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+            // Edge-to-edge with transparent bars. Content gets padding in HTML.
+            win.setStatusBarColor(Color.TRANSPARENT);
+            win.setNavigationBarColor(Color.TRANSPARENT);
             if (Build.VERSION.SDK_INT >= 29) {
                 win.setStatusBarContrastEnforced(false);
                 win.setNavigationBarContrastEnforced(false);
+                win.setNavigationBarDividerColor(Color.TRANSPARENT);
             }
+            int flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                      | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                      | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
+            if (systemBarsLight) {
+                if (Build.VERSION.SDK_INT >= 23) flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+                if (Build.VERSION.SDK_INT >= 26) flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            }
+            decor.setSystemUiVisibility(flags);
         } else {
+            // Landscape — fullscreen immersive.
             win.setStatusBarColor(Color.TRANSPARENT);
             win.setNavigationBarColor(Color.TRANSPARENT);
             decor.setSystemUiVisibility(
@@ -136,6 +150,11 @@ public class MusicActivity extends Activity {
                     | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                     | View.SYSTEM_UI_FLAG_FULLSCREEN);
         }
+    }
+
+    private void setSystemBarsLight(boolean light) {
+        systemBarsLight = light;
+        applySystemBars(getResources().getConfiguration().orientation);
     }
 
     @Override protected void onNewIntent(Intent intent) {
@@ -234,8 +253,6 @@ public class MusicActivity extends Activity {
         return sb.toString();
     }
 
-    // Saves the picked cover to app-private storage AND (for MP3) embeds it as
-    // an APIC frame in the actual file via LocalFileServer.embedCoverInMp3().
     private void saveCoverFor(long songId, Uri src) {
         File dir = new File(getFilesDir(), "covers");
         if (!dir.exists()) dir.mkdirs();
@@ -265,7 +282,6 @@ public class MusicActivity extends Activity {
             return;
         }
 
-        // Embed into MP3 if applicable
         String audioMime = getAudioMime(songId);
         if (audioMime != null && (audioMime.contains("mpeg") || audioMime.contains("mp3"))) {
             try {
@@ -361,7 +377,6 @@ public class MusicActivity extends Activity {
             });
         }
 
-        /** Rebuilds notification without changing play state. */
         @JavascriptInterface public void refreshNotification() {
             runOnUiThread(() -> {
                 try {
@@ -389,7 +404,6 @@ public class MusicActivity extends Activity {
             });
         }
 
-        /** Wallpaper-derived theme; returns `{"hue": N, "dark": bool}` or `{"hue": -1}`. */
         @JavascriptInterface public String getWallpaperTheme() {
             if (Build.VERSION.SDK_INT >= 31) {
                 try {
@@ -398,14 +412,32 @@ public class MusicActivity extends Activity {
                     if (wc != null && wc.getPrimaryColor() != null) {
                         float[] hsv = new float[3];
                         Color.colorToHSV(wc.getPrimaryColor().toArgb(), hsv);
-                        boolean dark = hsv[2] < 0.55f;
-                        return "{\"hue\":" + hsv[0] + ",\"dark\":" + dark + "}";
+                        return "{\"hue\":" + hsv[0] + "}";
                     }
                 } catch (Exception e) {
                     Log.w(TAG, "wallpaper colors failed", e);
                 }
             }
             return "{\"hue\":-1}";
+        }
+
+        @JavascriptInterface public boolean getSystemDark() {
+            int mode = getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
+            return mode == Configuration.UI_MODE_NIGHT_YES;
+        }
+
+        @JavascriptInterface public int getStatusBarHeightPx() {
+            int id = getResources().getIdentifier("status_bar_height", "dimen", "android");
+            return id > 0 ? getResources().getDimensionPixelSize(id) : 0;
+        }
+
+        @JavascriptInterface public int getNavBarHeightPx() {
+            int id = getResources().getIdentifier("navigation_bar_height", "dimen", "android");
+            return id > 0 ? getResources().getDimensionPixelSize(id) : 0;
+        }
+
+        @JavascriptInterface public void setBarsLight(final boolean light) {
+            runOnUiThread(() -> setSystemBarsLight(light));
         }
     }
 }

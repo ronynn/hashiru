@@ -2,7 +2,6 @@
    HASHIRU MUSIC — STYLES
    ========================================================= */
 
-/* ---------- Theme variables ---------- */
 :root {
   --bg: #111; --fg: #fff; --accent: #888; --dim: #555;
   --panel-bg: #111; --list-hover: #333;
@@ -11,6 +10,7 @@
   --font-family: sans-serif; --font-weight: 400;
   --cover-radius: 0; --btn-radius: 0; --panel-radius: 0;
   --border-style: solid; --btn-border-style: solid;
+  --sbh: 0px; --nbh: 0px;
 }
 
 :root[data-theme="gruvbox"]    { --bg:#282828; --fg:#ebdbb2; --accent:#d79921; --dim:#7c6f64; --panel-bg:#1d2021; --list-hover:#3c3836; --scrollbar-thumb:#d79921; --scrollbar-track:#1d2021; }
@@ -45,10 +45,12 @@
   --scrollbar-thumb: #a8c98c; --scrollbar-track: #162016;
 }
 
-:root[data-theme="ev-light"] {
-  --bg: #fdf6e3; --fg: #5c6a72; --accent: #8da101; --dim: #939f91;
-  --panel-bg: #f4f0d9; --list-hover: #e6e2cc;
-  --scrollbar-thumb: #8da101; --scrollbar-track: #f4f0d9;
+/* Add inside :root[data-theme="ev-light"] block or at the end of the CSS */
+:root[data-theme="ev-light"] .player-controls button.mode-btn.active {
+  background: rgba(141, 161, 1, 0.15); /* Very soft green tint */
+  color: var(--accent);
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px rgba(141, 161, 1, 0.3);
 }
 
 :root[data-theme="chrome"] {
@@ -58,29 +60,32 @@
 }
 
 :root[data-theme="glass-light"] {
-  --bg: transparent; --fg: #1a1a2e; --accent: #d946ef; --dim: #8888aa;
+  --bg: transparent; --fg: #1a1a2e; --accent: #d946ef; --dim: #55557a;
   --panel-bg: rgba(255,255,255,0.42);
-  --list-hover: rgba(255,255,255,0.35);
+  --list-hover: rgba(255,255,255,0.38);
   --scrollbar-thumb: rgba(217,70,239,0.8);
   --scrollbar-track: rgba(255,255,255,0.1);
 }
 
-/* ---------- Glass-light background (pure gradients — no blur filter) ---------- */
+/* Glass-light: bolder gradient with 3 color blooms */
 :root[data-theme="glass-light"] {
   background:
-    radial-gradient(circle 360px at 15% 15%,
-      rgba(255,107,157,0.70) 0%,
-      rgba(192,132,252,0.40) 35%,
-      transparent 72%),
-    radial-gradient(circle 340px at 85% 85%,
-      rgba(251,191,36,0.62) 0%,
-      rgba(245,158,11,0.30) 38%,
-      transparent 72%),
-    linear-gradient(135deg, #f5f0ff 0%, #e8f0ff 100%);
+    radial-gradient(circle 520px at 12% 12%,
+      rgba(255,107,157,0.90) 0%,
+      rgba(192,132,252,0.55) 40%,
+      transparent 78%),
+    radial-gradient(circle 500px at 88% 22%,
+      rgba(96,165,250,0.85) 0%,
+      rgba(139,92,246,0.50) 45%,
+      transparent 80%),
+    radial-gradient(circle 500px at 50% 95%,
+      rgba(251,191,36,0.85) 0%,
+      rgba(245,158,11,0.40) 42%,
+      transparent 78%),
+    linear-gradient(135deg, #e8dfff 0%, #d8e8ff 100%);
 }
 :root[data-theme="glass-light"] body { background: transparent; }
 
-/* ---------- Physical theme: chrome body ---------- */
 :root[data-theme="chrome"] body {
   background:
     repeating-linear-gradient(90deg,
@@ -89,7 +94,6 @@
     linear-gradient(180deg, #3a3a3a 0%, #1a1a1a 40%, #2a2a2a 100%);
 }
 
-/* ---------- Fonts ---------- */
 :root[data-font="sans-light"]           { --font-family: sans-serif; --font-weight: 300; }
 :root[data-font="sans-serif-condensed"] { --font-family: sans-serif-condensed; }
 :root[data-font="serif"]                { --font-family: serif; }
@@ -108,16 +112,28 @@ button, a, [role="button"] {
   user-select: none;
 }
 
-html, body { height: 100%; height: 100dvh; margin: 0; overflow: hidden; }
+/* Long-press protection for song rows */
+.song-row, .song-row * {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+html { height: 100%; margin: 0; overflow: hidden; }
 body {
+  height: 100%; margin: 0; overflow: hidden;
   background: var(--bg); color: var(--fg);
   font-family: var(--font-family); font-weight: var(--font-weight);
-  display: flex; justify-content: center; padding: 8px;
+  display: flex; justify-content: center;
+  padding: 0;
   transition: background-color .3s, color .3s;
 }
 
 #app {
   width: 100%; max-width: 440px; height: 100%;
+  padding: var(--sbh, 0px) 8px var(--nbh, 0px) 8px;
   display: flex; flex-direction: column; gap: 6px;
   min-height: 0; min-width: 0; overflow: hidden;
   position: relative; z-index: 1;
@@ -149,11 +165,12 @@ legend {
 }
 :root[data-theme="winamp"] legend { color: #000080; background: #c0c0c0; }
 
-/* Hide settings + playlist legends on chrome & glass-light */
+/* Hide legends on immersive themes (settings, playlist, AND player for glass) */
 :root[data-theme="chrome"] fieldset.settings-fieldset > legend,
 :root[data-theme="chrome"] fieldset.playlist-fieldset > legend,
 :root[data-theme="glass-light"] fieldset.settings-fieldset > legend,
-:root[data-theme="glass-light"] fieldset.playlist-fieldset > legend {
+:root[data-theme="glass-light"] fieldset.playlist-fieldset > legend,
+:root[data-theme="glass-light"] fieldset.player-fieldset > legend {
   display: none;
 }
 
@@ -183,7 +200,7 @@ button:active { transform: scale(0.97); }
   transform: none;
 }
 
-/* ---------- Action row: rescan + font + theme ---------- */
+/* ---------- Action row ---------- */
 .action-row {
   display: flex;
   gap: 4px;
@@ -192,14 +209,9 @@ button:active { transform: scale(0.97); }
 .action-row > * { flex: 1 1 0; min-width: 0; }
 .action-row > button,
 .action-row .select-wrapper { height: 32px; }
-
 .action-row > button {
-  font-size: 10px;
-  letter-spacing: .3px;
-  padding: 0 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  font-size: 10px; letter-spacing: .3px; padding: 0 6px;
+  display: flex; align-items: center; justify-content: center;
   font-weight: bold;
 }
 
@@ -279,7 +291,6 @@ button:active { transform: scale(0.97); }
   cursor: pointer; font-size: 11px; display: flex;
   justify-content: space-between; align-items: center; gap: 6px;
   transition: background-color .1s; overflow: hidden; min-width: 0;
-  -webkit-user-select: none; user-select: none;
 }
 .song-row:hover { background: var(--list-hover); }
 .song-row.active { background: var(--fg); color: var(--bg); font-weight: bold; }
@@ -297,9 +308,22 @@ button:active { transform: scale(0.97); }
   transition: none;
 }
 .song-row .fav-btn:hover { background: transparent; }
-.song-row.active .fav-btn { color: var(--bg); border-color: var(--bg); }
+/* Star uses currentColor so it's visible on every active background */
+.song-row.active .fav-btn { color: inherit; border-color: currentColor; }
+
 :root[data-theme="winamp"] .song-row.active { background: #000080; color: #fff; }
 :root[data-theme="winamp"] .song-row.active .fav-btn { color: #fff; border-color: #fff; }
+
+:root[data-theme="chrome"] .song-row.active {
+  background: linear-gradient(180deg, #ff8800, #cc4400);
+  color: #000;
+}
+:root[data-theme="chrome"] .song-row.active .fav-btn { color: #000; border-color: #000; }
+
+:root[data-theme="glass-light"] .song-row.active {
+  background: var(--accent); color: #fff;
+}
+:root[data-theme="glass-light"] .song-row.active .fav-btn { color: #fff; border-color: #fff; }
 
 .folder-group { border-bottom: 1px solid var(--list-hover); }
 .folder-summary {
@@ -352,19 +376,14 @@ button:active { transform: scale(0.97); }
 }
 .cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .cover-placeholder { font-size: 34px; font-weight: bold; color: var(--accent); line-height: 1; }
-.cover::after {
-  content: '✎'; position: absolute; bottom: 4px; right: 4px;
-  font-size: 12px; color: rgba(255,255,255,.65);
-  background: rgba(0,0,0,.5); border-radius: 4px;
-  padding: 2px 5px; pointer-events: none; opacity: 0;
-  transition: opacity .15s;
-}
-.cover:hover::after { opacity: 1; }
+
+/* No pencil overlay */
+.cover::after { display: none; }
+
 :root[data-theme="winamp"] .info-box {
   border-style: inset;
   border-color: #000000 #ffffff #ffffff #000000;
 }
-
 :root[data-theme="chrome"] .cover,
 :root[data-theme="glass-light"] .cover {
   border-right: none;
@@ -386,7 +405,6 @@ button:active { transform: scale(0.97); }
   white-space: nowrap; text-overflow: ellipsis;
 }
 
-/* ---------- Visualizer — NO border ---------- */
 .visualizer-container {
   width: 100%; height: var(--vis-height);
   background: transparent;
@@ -466,7 +484,7 @@ canvas { width: 100%; height: 100%; display: block; }
 /* ---------- Toast ---------- */
 .toast {
   position: fixed;
-  bottom: 24px;
+  bottom: calc(var(--nbh, 0px) + 24px);
   left: 50%;
   transform: translate(-50%, 200%);
   background: var(--panel-bg);
@@ -543,7 +561,7 @@ canvas { width: 100%; height: 100%; display: block; }
 .modal-footer button { flex: 1; }
 
 /* =========================================================
-   CRT AMBER — glow
+   CRT AMBER
    ========================================================= */
 :root[data-theme="crt-amber"] .info .title {
   text-shadow: 0 0 6px rgba(255,176,0,0.6);
@@ -554,7 +572,7 @@ canvas { width: 100%; height: 100%; display: block; }
 }
 
 /* =========================================================
-   CHROME — brushed metal cassette player
+   CHROME
    ========================================================= */
 :root[data-theme="chrome"] fieldset {
   background: linear-gradient(180deg, #383838 0%, #1a1a1a 100%);
@@ -624,11 +642,6 @@ canvas { width: 100%; height: 100%; display: block; }
   background: linear-gradient(180deg, #ff8800, #cc4400);
   box-shadow: 0 0 8px rgba(255,136,0,0.6);
 }
-:root[data-theme="chrome"] .song-row.active {
-  background: linear-gradient(180deg, #ff8800, #cc4400);
-  color: #000;
-  text-shadow: 0 1px 0 rgba(255,255,255,0.2);
-}
 :root[data-theme="chrome"] .player-controls button.play-btn {
   background: linear-gradient(180deg, #ff8800 0%, #cc4400 100%);
   border: 1px solid #ffaa33;
@@ -646,9 +659,24 @@ canvas { width: 100%; height: 100%; display: block; }
     inset 0 1px 0 rgba(255,255,255,0.4);
   color: #fff;
 }
+
+/* Chrome — mode-btn "pressed" = solid amber fill */
+:root[data-theme="chrome"] .player-controls button.mode-btn {
+  background: linear-gradient(180deg, #3a3a3a 0%, #0a0a0a 100%);
+  border: 1px solid #555;
+  color: #888;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.12),
+    inset 0 -1px 0 rgba(0,0,0,0.5);
+}
 :root[data-theme="chrome"] .player-controls button.mode-btn.active {
-  color: #ff8800;
-  text-shadow: 0 0 6px rgba(255,136,0,0.6);
+  background: linear-gradient(180deg, #ff8800 0%, #cc4400 100%);
+  border-color: #ffaa33;
+  color: #000;
+  box-shadow:
+    0 0 12px rgba(255,136,0,0.6),
+    inset 0 2px 3px rgba(0,0,0,0.35);
+  text-shadow: 0 1px 0 rgba(255,255,255,0.2);
 }
 :root[data-theme="chrome"] .toast {
   background: #000; color: #ffaa33;
@@ -657,23 +685,46 @@ canvas { width: 100%; height: 100%; display: block; }
 }
 
 /* =========================================================
-   GLASS LIGHT — fast, neomorphic buttons, pure gradient bg
+   WINAMP 98 — mode-btn "pressed" = navy fill
    ========================================================= */
-:root[data-theme="glass-light"] fieldset {
-  background: rgba(255,255,255,0.42);
-  border: 1px solid rgba(255,255,255,0.7);
-  border-radius: 12px;
-  box-shadow:
-    0 6px 24px rgba(120,100,180,0.14),
-    inset 0 1px 0 rgba(255,255,255,0.85);
-  transition: none;
+:root[data-theme="winamp"] .player-controls button.mode-btn {
+  background: #c0c0c0;
+  border: 2px outset #c0c0c0;
+  border-color: #ffffff #808080 #808080 #ffffff;
+  color: #555;
+  width: auto;
+  height: auto;
+  padding: 4px 8px;
+  border-radius: 0;
 }
-:root[data-theme="glass-light"] legend {
-  background: transparent;
-  color: var(--accent);
+:root[data-theme="winamp"] .player-controls button.mode-btn.active {
+  background: #000080;
+  border-style: inset;
+  border-color: #000 #fff #fff #000;
+  color: #fff;
+}
+:root[data-theme="winamp"] .player-controls button.mode-btn:hover {
+  background: #d0d0d0;
+  color: #000;
+}
+:root[data-theme="winamp"] .player-controls button.mode-btn.active:hover {
+  background: #0000a0;
+  color: #fff;
 }
 
-/* Neomorphic glass buttons — same size, spaced */
+/* =========================================================
+   GLASS LIGHT — neomorphic buttons, active mode press, no backdrop-filter
+   ========================================================= */
+:root[data-theme="glass-light"] fieldset {
+  background: rgba(255,255,255,0.5);
+  border: 1px solid rgba(255,255,255,0.85);
+  border-radius: 12px;
+  box-shadow:
+    0 6px 24px rgba(120,60,180,0.18),
+    inset 0 1px 0 rgba(255,255,255,0.9);
+  transition: none;
+}
+
 :root[data-theme="glass-light"] .action-row { gap: 8px; }
 :root[data-theme="glass-light"] .playlist-header { gap: 8px; }
 :root[data-theme="glass-light"] .playlist-header button.search-btn {
@@ -683,98 +734,107 @@ canvas { width: 100%; height: 100%; display: block; }
 
 :root[data-theme="glass-light"] button,
 :root[data-theme="glass-light"] .select-wrapper select {
-  background: rgba(255,255,255,0.55);
-  border: 1px solid rgba(255,255,255,0.85);
+  background: rgba(255,255,255,0.6);
+  border: 1px solid rgba(255,255,255,0.9);
   color: var(--fg);
   border-radius: 8px;
   box-shadow:
-    2px 2px 6px rgba(120,100,180,0.18),
-    -2px -2px 6px rgba(255,255,255,0.75);
-  transition: background-color .15s, color .15s,
-              transform .12s, box-shadow .15s;
+    2px 2px 6px rgba(120,60,180,0.22),
+    -2px -2px 6px rgba(255,255,255,0.8);
+  transition: background-color .12s, transform .12s, box-shadow .12s;
 }
 :root[data-theme="glass-light"] button:hover,
 :root[data-theme="glass-light"] .select-wrapper select:hover {
-  background: rgba(255,255,255,0.72);
+  background: rgba(255,255,255,0.78);
   color: var(--fg);
 }
 :root[data-theme="glass-light"] button:active {
-  background: rgba(255,255,255,0.4);
+  background: rgba(255,255,255,0.45);
   box-shadow:
-    inset 2px 2px 5px rgba(120,100,180,0.28),
-    inset -2px -2px 5px rgba(255,255,255,0.65);
+    inset 2px 2px 5px rgba(120,60,180,0.32),
+    inset -2px -2px 5px rgba(255,255,255,0.7);
   transform: scale(0.97);
 }
-/* Keep active-state styling coherent */
+
 :root[data-theme="glass-light"] .playlist-header button.active {
   background: var(--accent);
   color: #fff;
   box-shadow:
-    2px 2px 6px rgba(120,100,180,0.28),
+    2px 2px 6px rgba(120,60,180,0.35),
     -2px -2px 6px rgba(255,255,255,0.6);
 }
 
-/* Inset screen for the info box */
 :root[data-theme="glass-light"] .info-box {
   background: rgba(255,255,255,0.5);
-  border: 1px solid rgba(255,255,255,0.8);
+  border: 1px solid rgba(255,255,255,0.85);
   border-radius: 10px;
   box-shadow:
-    inset 3px 3px 8px rgba(120,100,180,0.15),
-    inset -3px -3px 8px rgba(255,255,255,0.75);
+    inset 3px 3px 8px rgba(120,60,180,0.18),
+    inset -3px -3px 8px rgba(255,255,255,0.8);
 }
 :root[data-theme="glass-light"] .progress-bar {
-  background: rgba(255,255,255,0.4);
-  border: 1px solid rgba(255,255,255,0.75);
+  background: rgba(255,255,255,0.45);
+  border: 1px solid rgba(255,255,255,0.8);
   box-shadow:
-    inset 2px 2px 4px rgba(120,100,180,0.18),
-    inset -1px -1px 3px rgba(255,255,255,0.6);
+    inset 2px 2px 4px rgba(120,60,180,0.2),
+    inset -1px -1px 3px rgba(255,255,255,0.65);
 }
-:root[data-theme="glass-light"] .song-row.active {
-  background: var(--accent);
-  color: #fff;
+:root[data-theme="glass-light"] .progress-fill {
+  background: linear-gradient(90deg, #d946ef, #8b5cf6);
+  box-shadow: 0 0 6px rgba(217,70,239,0.5);
 }
-:root[data-theme="glass-light"] .song-row .fav-btn {
-  box-shadow: none;
-  background: transparent;
-  border: 2px solid currentColor;
-  border-radius: 0;
-}
+
 :root[data-theme="glass-light"] .player-controls button {
   background: transparent;
   border: none;
   box-shadow: none;
+  color: var(--fg);
 }
 :root[data-theme="glass-light"] .player-controls button.play-btn {
-  background: rgba(255,255,255,0.55);
-  border: 1px solid rgba(255,255,255,0.85);
+  background: rgba(255,255,255,0.6);
+  border: 1px solid rgba(255,255,255,0.9);
   border-radius: 50%;
   box-shadow:
-    2px 2px 6px rgba(120,100,180,0.2),
-    -2px -2px 6px rgba(255,255,255,0.75);
+    2px 2px 6px rgba(120,60,180,0.25),
+    -2px -2px 6px rgba(255,255,255,0.85);
 }
 :root[data-theme="glass-light"] .player-controls button.play-btn:active {
   box-shadow:
-    inset 2px 2px 5px rgba(120,100,180,0.3),
-    inset -2px -2px 5px rgba(255,255,255,0.6);
+    inset 2px 2px 5px rgba(120,60,180,0.35),
+    inset -2px -2px 5px rgba(255,255,255,0.7);
   transform: scale(0.95);
 }
+
+/* Glass — active mode button = filled accent */
+:root[data-theme="glass-light"] .player-controls button.mode-btn {
+  color: var(--dim);
+}
+:root[data-theme="glass-light"] .player-controls button.mode-btn.active {
+  background: var(--accent);
+  color: #fff;
+  border-radius: 8px;
+  box-shadow:
+    inset 2px 2px 5px rgba(120,60,180,0.3),
+    0 0 10px rgba(217,70,239,0.4);
+  padding: 4px 8px;
+}
+
 :root[data-theme="glass-light"] .toast {
-  background: rgba(255,255,255,0.6);
-  border: 1px solid rgba(255,255,255,0.85);
+  background: rgba(255,255,255,0.75);
+  border: 1px solid rgba(255,255,255,0.9);
   color: var(--fg);
+  box-shadow: 0 6px 20px rgba(120,60,180,0.25);
 }
 :root[data-theme="glass-light"] .modal {
-  background: rgba(255,255,255,0.7);
-  border: 1px solid rgba(255,255,255,0.85);
-  box-shadow: 0 12px 40px rgba(120,100,180,0.25);
+  background: rgba(255,255,255,0.85);
+  border: 1px solid rgba(255,255,255,0.9);
+  box-shadow: 0 12px 40px rgba(120,60,180,0.3);
 }
 
 /* ---------- Responsive ---------- */
 @media (max-height: 720px) {
   :root { --cover-size: 96px; --vis-height: 80px; }
-  body { padding: 6px; }
-  #app { gap: 5px; }
+  #app { gap: 5px; padding-top: var(--sbh, 0px); padding-bottom: var(--nbh, 0px); padding-left: 6px; padding-right: 6px; }
   fieldset { padding: 5px; gap: 5px; }
   .info .title { font-size: 15px; }
   .info .artist, .info .album { font-size: 12px; }
@@ -784,8 +844,7 @@ canvas { width: 100%; height: 100%; display: block; }
 }
 @media (max-height: 560px) {
   :root { --cover-size: 72px; --vis-height: 56px; }
-  body { padding: 4px; }
-  #app { gap: 4px; }
+  #app { gap: 4px; padding-left: 4px; padding-right: 4px; }
   fieldset { padding: 4px; gap: 4px; }
   legend { font-size: 10px; padding: 0 4px; }
   button { padding: 4px 6px; font-size: 11px; }
@@ -805,6 +864,20 @@ canvas { width: 100%; height: 100%; display: block; }
   .action-row > button { font-size: 9px; }
   .select-wrapper select { font-size: 9px; padding: 3px 18px 3px 4px; }
 }
+
+/* Landscape — immersive, only side safe-area padding */
+@media (orientation: landscape) {
+  #app {
+    padding-top: 0;
+    padding-bottom: 0;
+    padding-left: calc(env(safe-area-inset-left, 0px) + 12px);
+    padding-right: calc(env(safe-area-inset-right, 0px) + 12px);
+  }
+  .toast {
+    bottom: 24px;
+  }
+}
+
 @media (min-width: 800px), (orientation: landscape) and (min-width: 600px) {
   #app { max-width: 1000px; flex-direction: row; gap: 10px; }
   .col {
@@ -819,4 +892,10 @@ canvas { width: 100%; height: 100%; display: block; }
 }
 @media (min-width: 800px) and (min-height: 700px) {
   :root { --vis-height: 150px; --cover-size: 140px; }
+}
+
+
+/* Hide the repeat-one badge circle */
+.player-controls button.mode-btn.repeat-one::after {
+  display: none !important;
 }

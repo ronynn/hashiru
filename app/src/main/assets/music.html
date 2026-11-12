@@ -16,11 +16,17 @@
         <button id="rescanBtn">RESCAN</button>
         <div class="select-wrapper">
           <select id="fontPicker">
+            <optgroup label="SANS">
               <option value="sans">SANS</option>
               <option value="sans-light">SANS LIGHT</option>
               <option value="sans-serif-condensed">CONDENSED</option>
+            </optgroup>
+            <optgroup label="SERIF">
               <option value="serif">SERIF</option>
+            </optgroup>
+            <optgroup label="MONO">
               <option value="mono">MONO</option>
+            </optgroup>
           </select>
         </div>
         <div class="select-wrapper">
@@ -123,6 +129,7 @@
 
 const THEME_VALUES = ['default','gruvbox','nord','dracula','tokyo','light','solar','dynamic','winamp','monokai','crt-amber','forest','ev-light','chrome','glass-light'];
 const FONT_VALUES  = ['sans','sans-light','sans-serif-condensed','serif','mono'];
+const LIGHT_THEMES = ['light','solar','ev-light','glass-light'];
 const HISTORY_MAX  = 50;
 
 const $ = id => document.getElementById(id);
@@ -143,8 +150,11 @@ const state = {
   isPlaying: false, hasPermission: true,
   editingSongId: -1,
   shuffle: false,
-  repeat: 'off'
+  repeat: 'off',
+  dynamicDark: true
 };
+
+const openFolders = new Set();
 
 let colors = { fg: '#fff', accent: '#888', dim: '#555' };
 let audioCtx = null, analyser = null, timeData = null, animationId = null;
@@ -200,6 +210,16 @@ function applyWallpaperColors(hue, dark) {
   root.style.setProperty('--scrollbar-thumb', `hsl(${hue}, 68%, ${dark ? 62 : 42}%)`);
 }
 
+function themeIsLight(theme) {
+  if (theme === 'dynamic') return !state.dynamicDark;
+  return LIGHT_THEMES.includes(theme);
+}
+
+function updateSystemBars(theme) {
+  const isLight = themeIsLight(theme);
+  try { __HashiruMusic.setBarsLight(isLight); } catch (e) {}
+}
+
 function applyTheme(v) {
   if (!THEME_VALUES.includes(v)) v = 'default';
   document.documentElement.setAttribute('data-theme', v);
@@ -211,26 +231,25 @@ function applyTheme(v) {
   clearDynamicInlineStyles();
 
   if (v === 'dynamic') {
-    let applied = false;
+    let hue = 210;
+    let dark = true;
     try {
       const wp = JSON.parse(__HashiruMusic.getWallpaperTheme());
-      if (wp.hue >= 0) {
-        applyWallpaperColors(wp.hue, wp.dark === true);
-        applied = true;
+      if (wp.hue >= 0) hue = wp.hue;
+    } catch (e) {}
+    try { dark = __HashiruMusic.getSystemDark(); } catch (e) {}
+    applyWallpaperColors(hue, dark);
+    state.dynamicDark = dark;
+    try {
+      if (!localStorage.getItem('music-dynamic-warned')) {
+        localStorage.setItem('music-dynamic-warned', '1');
+        setTimeout(() => setStatus('WALLPAPER COLORS UNAVAILABLE', 4000), 300);
       }
     } catch (e) {}
-    if (!applied) {
-      applyWallpaperColors(210, window.matchMedia('(prefers-color-scheme: dark)').matches);
-      try {
-        if (!localStorage.getItem('music-dynamic-warned')) {
-          localStorage.setItem('music-dynamic-warned', '1');
-          setTimeout(() => setStatus('WALLPAPER COLORS UNAVAILABLE', 4000), 300);
-        }
-      } catch (e) {}
-    }
   }
 
   refreshColors();
+  updateSystemBars(v);
   if (!state.isPlaying) drawStatic();
 }
 
@@ -338,26 +357,43 @@ function renderEmpty() {
   playlistEl.appendChild(d);
 }
 
+function makeFolder(name, count, songs, folderKey) {
+  const det = document.createElement('details');
+  det.className = 'folder-group';
+  det.open = openFolders.has(folderKey);
+  det.addEventListener('toggle', () => {
+    if (det.open) openFolders.add(folderKey);
+    else openFolders.delete(folderKey);
+  });
+  const sum = document.createElement('summary');
+  sum.className = 'folder-summary';
+  const nameEl = document.createElement('span');
+  nameEl.className = 'folder-name';
+  nameEl.textContent = name;
+  const cntEl = document.createElement('span');
+  cntEl.className = 'folder-count';
+  cntEl.textContent = '(' + count + ')';
+  sum.append(nameEl, cntEl);
+  det.appendChild(sum);
+  if (!songs.length) {
+    const em = document.createElement('div');
+    em.className = 'empty-msg';
+    em.textContent = folderKey.startsWith('fav:')
+      ? (folderKey === 'fav:starred' ? 'NO STARRED SONGS' : 'NO HISTORY YET')
+      : 'EMPTY';
+    det.appendChild(em);
+  } else {
+    for (let i = 0; i < songs.length; i++)
+      det.appendChild(makeSongRow(songs[i], i));
+  }
+  return det;
+}
+
 function renderAll() {
   const names = Object.keys(state.folders);
   const frag = document.createDocumentFragment();
   for (const name of names) {
-    const songs = state.folders[name];
-    const det = document.createElement('details');
-    det.className = 'folder-group';
-    const sum = document.createElement('summary');
-    sum.className = 'folder-summary';
-    const nameEl = document.createElement('span');
-    nameEl.className = 'folder-name';
-    nameEl.textContent = name;
-    const cntEl = document.createElement('span');
-    cntEl.className = 'folder-count';
-    cntEl.textContent = '(' + songs.length + ')';
-    sum.append(nameEl, cntEl);
-    det.appendChild(sum);
-    for (let i = 0; i < songs.length; i++)
-      det.appendChild(makeSongRow(songs[i], i));
-    frag.appendChild(det);
+    frag.appendChild(makeFolder(name, state.folders[name].length, state.folders[name], 'all:' + name));
   }
   playlistEl.appendChild(frag);
 }
@@ -370,55 +406,8 @@ function renderFav() {
     .filter(s => !!s);
 
   const frag = document.createDocumentFragment();
-
-  const starDet = document.createElement('details');
-  starDet.className = 'folder-group';
-  const starSum = document.createElement('summary');
-  starSum.className = 'folder-summary';
-  const starName = document.createElement('span');
-  starName.className = 'folder-name';
-  starName.textContent = 'STARRED';
-  const starCnt = document.createElement('span');
-  starCnt.className = 'folder-count';
-  starCnt.textContent = '(' + favs.length + ')';
-  starSum.append(starName, starCnt);
-  starDet.appendChild(starSum);
-
-  if (!favs.length) {
-    const em = document.createElement('div');
-    em.className = 'empty-msg';
-    em.textContent = 'NO STARRED SONGS';
-    starDet.appendChild(em);
-  } else {
-    for (let i = 0; i < favs.length; i++)
-      starDet.appendChild(makeSongRow(favs[i], i));
-  }
-  frag.appendChild(starDet);
-
-  const histDet = document.createElement('details');
-  histDet.className = 'folder-group';
-  const histSum = document.createElement('summary');
-  histSum.className = 'folder-summary';
-  const histName = document.createElement('span');
-  histName.className = 'folder-name';
-  histName.textContent = 'HISTORY';
-  const histCnt = document.createElement('span');
-  histCnt.className = 'folder-count';
-  histCnt.textContent = '(' + historySongs.length + ')';
-  histSum.append(histName, histCnt);
-  histDet.appendChild(histSum);
-
-  if (!historySongs.length) {
-    const em = document.createElement('div');
-    em.className = 'empty-msg';
-    em.textContent = 'NO HISTORY YET';
-    histDet.appendChild(em);
-  } else {
-    for (let i = 0; i < historySongs.length; i++)
-      histDet.appendChild(makeSongRow(historySongs[i], i));
-  }
-  frag.appendChild(histDet);
-
+  frag.appendChild(makeFolder('STARRED', favs.length, favs, 'fav:starred'));
+  frag.appendChild(makeFolder('HISTORY', historySongs.length, historySongs, 'fav:history'));
   playlistEl.appendChild(frag);
 }
 
@@ -445,6 +434,7 @@ function renderSearch() {
 function makeSongRow(song, displayIdx) {
   const row = document.createElement('div');
   row.className = 'song-row';
+  row.dataset.songId = String(song.id);
   if (song.id === state.currentId) row.classList.add('active');
 
   const name = document.createElement('span');
@@ -466,26 +456,43 @@ function makeSongRow(song, displayIdx) {
   });
 
   let pressTimer = null;
+  let longPressed = false;
   row.addEventListener('touchstart', () => {
+    longPressed = false;
     clearTimeout(pressTimer);
-    pressTimer = setTimeout(() => { openEditModal(song); }, 500);
+    pressTimer = setTimeout(() => {
+      longPressed = true;
+      openEditModal(song);
+    }, 500);
   }, { passive: true });
   ['touchend','touchmove','touchcancel'].forEach(evt =>
     row.addEventListener(evt, () => clearTimeout(pressTimer), { passive: true }));
-  row.addEventListener('contextmenu', e => { e.preventDefault(); openEditModal(song); });
+  row.addEventListener('contextmenu', e => { e.preventDefault(); });
+  row.addEventListener('click', e => {
+    if (longPressed) { e.stopPropagation(); longPressed = false; return; }
+  }, true);
 
   return row;
+}
+
+function updateActiveRow() {
+  playlistEl.querySelectorAll('.song-row').forEach(row => {
+    const id = parseInt(row.dataset.songId, 10);
+    row.classList.toggle('active', id === state.currentId);
+  });
 }
 
 async function toggleFav(song) {
   const newFav = !song.isFav;
   song.isFav = newFav;
-  renderList();
+  const row = playlistEl.querySelector('.song-row[data-song-id="' + song.id + '"]');
+  let btn = row ? row.querySelector('.fav-btn') : null;
+  if (btn) btn.textContent = newFav ? '★' : '☆';
   try {
     await fetch(`/_music/fav?id=${song.id}&on=${newFav ? 1 : 0}`, { cache: 'no-store' });
   } catch (e) {
     song.isFav = !newFav;
-    renderList();
+    if (btn) btn.textContent = newFav ? '★' : '☆';
   }
 }
 
@@ -494,7 +501,14 @@ function focusCurrent() {
   const active = playlistEl.querySelector('.song-row.active');
   if (!active) return;
   const folder = active.closest('details');
-  if (folder) folder.open = true;
+  if (folder) {
+    folder.open = true;
+    const key = folder.querySelector('.folder-name')?.textContent;
+    if (key) {
+      if (state.view === 'all') openFolders.add('all:' + key);
+      // FAV folders are keyed differently; rely on toggle listener
+    }
+  }
   setTimeout(() => {
     try { active.scrollIntoView({ block: 'center' }); } catch (e) {}
   }, 60);
@@ -507,7 +521,6 @@ async function openEditModal(song) {
   $('editAlbum').value  = song.album  || '';
   $('editTrack').value  = song.track != null ? String(song.track) : '';
   editModal.classList.add('active');
-  setTimeout(() => $('editTitle').focus(), 100);
 
   try {
     const r = await fetch(`/_music/metadata?id=${song.id}`, { cache: 'no-store' });
@@ -550,8 +563,11 @@ async function saveEditModal() {
       $('songAlbum').textContent  = album  || 'UNKNOWN ALBUM';
       try { __HashiruMusic.refreshNotification(); } catch (e) {}
     }
-    rebuildFolders();
-    renderList();
+    const row = playlistEl.querySelector('.song-row[data-song-id="' + id + '"] .track-name');
+    if (row) {
+      const num = row.textContent.split('.')[0];
+      row.textContent = num + '. ' + (title || 'Unknown');
+    }
     setStatus('SAVED', 2000);
   } catch (e) {
     setStatus('SAVE FAILED', 3000);
@@ -573,7 +589,7 @@ function playById(id) {
 
   addToHistory(id);
   updateNowPlaying(song);
-  renderList();
+  updateActiveRow();
   saveLast();
 }
 
@@ -764,6 +780,13 @@ function setupAudio() {
     }
   });
   setInterval(() => { if (state.isPlaying) saveLast(); }, 5000);
+
+  // If AudioContext suspends (WebView quirk), resume so playback isn't silent.
+  setInterval(() => {
+    if (audioCtx && audioCtx.state === 'suspended' && state.isPlaying && !audio.paused) {
+      audioCtx.resume().catch(()=>{});
+    }
+  }, 1000);
 }
 
 function setupUI() {
@@ -857,6 +880,18 @@ function setupUI() {
   });
 }
 
+function applyInsets() {
+  try {
+    const sbh = __HashiruMusic.getStatusBarHeightPx() || 0;
+    const nbh = __HashiruMusic.getNavBarHeightPx() || 0;
+    document.documentElement.style.setProperty('--sbh', sbh + 'px');
+    document.documentElement.style.setProperty('--nbh', nbh + 'px');
+  } catch (e) {
+    document.documentElement.style.setProperty('--sbh', '0px');
+    document.documentElement.style.setProperty('--nbh', '0px');
+  }
+}
+
 window.__hashiruMusic = {
   rescan: () => loadLibrary(),
   playById: (id) => playById(id),
@@ -877,6 +912,7 @@ window.__hashiruMusic = {
 };
 
 async function init() {
+  applyInsets();
   applyTheme(localStorage.getItem('music-theme') || 'default');
   applyFont(localStorage.getItem('music-font') || 'sans');
   loadPlaybackModes();

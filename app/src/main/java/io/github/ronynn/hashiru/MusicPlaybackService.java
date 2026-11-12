@@ -48,21 +48,15 @@ public class MusicPlaybackService extends Service {
     private String artist = "";
     private long currentSongId = -1;
 
-    private AudioManager audioManager;
-    private boolean hasAudioFocus = false;
-    private AudioManager.OnAudioFocusChangeListener focusListener;
-
     private final BroadcastReceiver noisyReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
             if (AudioManager.ACTION_AUDIO_BECOMING_NOISY.equals(intent.getAction())) {
-                // Headphones unplugged → pause immediately
                 if (playing) {
                     playing = false;
                     broadcast("pause");
                     updateNotification();
                     updateSession();
                 }
-                abandonFocus();
             }
         }
     };
@@ -72,29 +66,6 @@ public class MusicPlaybackService extends Service {
         createChannel();
         ensureSession();
 
-        audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-        focusListener = new AudioManager.OnAudioFocusChangeListener() {
-            @Override public void onAudioFocusChange(int focusChange) {
-                switch (focusChange) {
-                    case AudioManager.AUDIOFOCUS_LOSS:
-                    case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
-                        if (playing) {
-                            playing = false;
-                            broadcast("pause");
-                            updateNotification();
-                            updateSession();
-                        }
-                        break;
-                    case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
-                        // Let it keep playing
-                        break;
-                    case AudioManager.AUDIOFOCUS_GAIN:
-                        // Don't auto-resume; user must press play.
-                        break;
-                }
-            }
-        };
-
         IntentFilter noisyFilter = new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY);
         if (Build.VERSION.SDK_INT >= 33) {
             registerReceiver(noisyReceiver, noisyFilter, Context.RECEIVER_NOT_EXPORTED);
@@ -103,38 +74,18 @@ public class MusicPlaybackService extends Service {
         }
     }
 
-    private void requestFocus() {
-        if (audioManager == null || hasAudioFocus) return;
-        try {
-            int r = audioManager.requestAudioFocus(focusListener,
-                    AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
-            hasAudioFocus = (r == AudioManager.AUDIOFOCUS_REQUEST_GRANTED);
-        } catch (Exception ignored) {}
-    }
-
-    private void abandonFocus() {
-        if (audioManager != null && hasAudioFocus) {
-            try { audioManager.abandonAudioFocus(focusListener); }
-            catch (Exception ignored) {}
-            hasAudioFocus = false;
-        }
-    }
-
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent != null ? intent.getAction() : ACTION_START;
 
         if (ACTION_STOP.equals(action)) {
-            abandonFocus();
             shutdown();
             return START_NOT_STICKY;
         }
 
         if (ACTION_PAUSE.equals(action)) {
             playing = false;
-            abandonFocus();
         } else if (ACTION_START.equals(action)) {
             playing = true;
-            requestFocus();
             if (intent != null) applyExtras(intent);
         } else if (ACTION_UPDATE_META.equals(action) && intent != null) {
             applyExtras(intent);
@@ -339,7 +290,6 @@ public class MusicPlaybackService extends Service {
     }
 
     @Override public void onDestroy() {
-        abandonFocus();
         try { unregisterReceiver(noisyReceiver); } catch (Exception ignored) {}
         try {
             if (Build.VERSION.SDK_INT >= 24) stopForeground(Service.STOP_FOREGROUND_REMOVE);
