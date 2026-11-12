@@ -6,8 +6,13 @@
         <item name="android:textColorSecondary">#B0B0B0</item>
     </style>
     <style name="WebViewTheme" parent="@android:style/Theme.Material.NoActionBar">
-    <item name="android:windowBackground">#121212</item>
-    <item name="android:colorBackground">#121212</item>
-    <item name="android:textColorPrimary">#FFFFFF</item>
-</style>
+        <item name="android:windowBackground">#121212</item>
+        <item name="android:colorBackground">#121212</item>
+        <item name="android:textColorPrimary">#FFFFFF</item>
+    </style>
+    <style name="MusicTheme" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#111111</item>
+        <item name="android:colorBackground">#111111</item>
+        <item name="android:textColorPrimary">#FFFFFF</item>
+    </style>
 </resources>

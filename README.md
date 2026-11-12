@@ -78,6 +78,20 @@ Hashiru applies the same principle to HTML documents: the runtime lives in the a
 
 
 
+## Roadmap
+
+- [ ] search button beside done,
+- [ ] custom font and theme 3 values others interpolated
+- [ ] easy way to add docx reader editor? (image import stuff will be tough?) also .json
+- [ ] rendering support for - [ ] syntax
+- [ ] landscape editing cursor shoukdnt be behind keyboard
+- [ ] break webview activity code into parts
+- [ ] toggle for autosave, toggle open in edit
+- [ ] word count reading time bottom left
+- [ ] relative images
+- [ ] prismjs syntax highlighting code blocks
+
+
 
 
 ## Licenses

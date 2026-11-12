@@ -2,8 +2,10 @@ package io.github.ronynn.hashiru;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.DocumentsContract;
@@ -24,6 +26,7 @@ public class MainActivity extends Activity {
 
     private static final String PREFS = "hashiru";
     private static final String KEY_URI = "tree_uri";
+    private static final String KEY_MUSIC_ICON = "music_launcher_enabled";
     private static final int REQ_PICK = 1001;
 
     private ListView list;
@@ -40,6 +43,9 @@ public class MainActivity extends Activity {
         super.onCreate(b);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         setContentView(R.layout.activity_main);
+
+        // Sync the launcher alias enabled state with our saved preference on start.
+        syncMusicLauncherState();
 
         list = findViewById(R.id.list);
         pathView = findViewById(R.id.path);
@@ -77,6 +83,23 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void syncMusicLauncherState() {
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        boolean enabled = prefs.getBoolean(KEY_MUSIC_ICON, true);
+        setMusicLauncherEnabled(enabled);
+    }
+
+    private void setMusicLauncherEnabled(boolean enabled) {
+        try {
+            ComponentName alias = new ComponentName(this, "io.github.ronynn.hashiru.MusicLauncher");
+            int state = enabled
+                    ? PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                    : PackageManager.COMPONENT_ENABLED_STATE_DISABLED;
+            getPackageManager().setComponentEnabledSetting(
+                    alias, state, PackageManager.DONT_KILL_APP);
+        } catch (Exception ignored) {}
+    }
+
     private void showSettingsMenu(View anchor) {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         PopupMenu pm = new PopupMenu(this, anchor);
@@ -90,6 +113,9 @@ public class MainActivity extends Activity {
         MenuItem eruda = m.add(0, 5, 4, "Eruda");
         eruda.setCheckable(true);
         eruda.setChecked(prefs.getBoolean(ReaderSettings.KEY_ERUDA, false));
+        MenuItem musicIcon = m.add(0, 6, 5, "Music launcher icon");
+        musicIcon.setCheckable(true);
+        musicIcon.setChecked(prefs.getBoolean(KEY_MUSIC_ICON, true));
 
         pm.setOnMenuItemClickListener(item -> {
             switch (item.getItemId()) {
@@ -105,6 +131,13 @@ public class MainActivity extends Activity {
                 case 5: {
                     boolean v = !item.isChecked();
                     prefs.edit().putBoolean(ReaderSettings.KEY_ERUDA, v).apply();
+                    item.setChecked(v);
+                    return true;
+                }
+                case 6: {
+                    boolean v = !item.isChecked();
+                    prefs.edit().putBoolean(KEY_MUSIC_ICON, v).apply();
+                    setMusicLauncherEnabled(v);
                     item.setChecked(v);
                     return true;
                 }
@@ -234,15 +267,9 @@ public class MainActivity extends Activity {
         else rel = String.join("/", folderPath) + "/" + d.name;
 
         Intent i = new Intent(this, WebViewActivity.class);
-        // NEW_DOCUMENT without MULTIPLE_TASK → OS looks for an existing task
-        // whose base intent matches (by data URI). Same file → brought forward.
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT);
-
-        // Identity for the OS: (tree URI, rel path). Same file in the same
-        // tree always maps to the same URI → no duplicate task.
         String identity = treeUri.toString() + "|" + rel;
         i.setData(Uri.parse("hashiru://open/" + Uri.encode(identity)));
-
         i.putExtra(WebViewActivity.EXTRA_TREE_URI, treeUri.toString());
         i.putExtra(WebViewActivity.EXTRA_REL_PATH, rel);
         startActivity(i);

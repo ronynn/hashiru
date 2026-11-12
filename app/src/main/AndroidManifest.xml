@@ -3,6 +3,14 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:allowBackup="false"
         android:icon="@drawable/ic_launcher"
@@ -18,6 +26,42 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- ==================== MUSIC PLAYER ==================== -->
+
+        <activity
+            android:name=".MusicActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:theme="@style/MusicTheme">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="audio/*" />
+                <data android:mimeType="application/ogg" />
+            </intent-filter>
+        </activity>
+
+        <activity-alias
+            android:name=".MusicLauncher"
+            android:targetActivity=".MusicActivity"
+            android:exported="true"
+            android:enabled="true"
+            android:icon="@drawable/ic_launcher_music"
+            android:label="@string/music_app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <service
+            android:name=".MusicPlaybackService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
+        <!-- ==================== READER (unchanged) ==================== -->
 
         <activity
             android:name=".WebViewActivity"
@@ -47,7 +91,6 @@
                 <data android:scheme="file"    android:mimeType="application/xhtml+xml" />
             </intent-filter>
 
-            <!-- CSV -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -60,38 +103,32 @@
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <data android:scheme="file" android:host="*"
-                      android:pathPattern=".*\\.txt" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.txt" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <data android:scheme="file" android:host="*"
-                      android:pathPattern=".*\\.md" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.md" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <data android:scheme="file" android:host="*"
-                      android:pathPattern=".*\\.markdown" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.markdown" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <data android:scheme="file" android:host="*"
-                      android:pathPattern=".*\\.html" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.html" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <data android:scheme="file" android:host="*"
-                      android:pathPattern=".*\\.htm" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.htm" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <data android:scheme="file" android:host="*"
-                      android:pathPattern=".*\\.csv" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.csv" />
             </intent-filter>
         </activity>
     </application>
