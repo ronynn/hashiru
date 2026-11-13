@@ -37,6 +37,8 @@ import java.io.InputStream;
 public class MusicActivity extends Activity {
 
     private static final String TAG = "MusicActivity";
+    private static final String BRIDGE_TAG = "MusicBridge";
+
     private static final int REQ_AUDIO_PERM = 100;
     private static final int REQ_COVER_PICK = 200;
 
@@ -50,14 +52,16 @@ public class MusicActivity extends Activity {
     private final BroadcastReceiver mediaCmdReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context ctx, Intent intent) {
             String cmd = intent.getStringExtra("cmd");
-            if (cmd == null) return;
-
+            if (cmd == null) {
+                Log.w(BRIDGE_TAG, "media cmd with no action");
+                return;
+            }
             if ("seek".equals(cmd)) {
                 long pos = intent.getLongExtra("pos", -1);
                 if (pos >= 0) {
                     evalJs("window.__hashiruMusic && window.__hashiruMusic.cmd('seek', " + pos + ")");
-                    return;
                 }
+                return;
             }
             evalJs("window.__hashiruMusic && window.__hashiruMusic.cmd(" + jsStr(cmd) + ")");
         }
@@ -76,9 +80,13 @@ public class MusicActivity extends Activity {
         s.setDomStorageEnabled(true);
         s.setAllowContentAccess(true);
         s.setAllowFileAccess(false);
+        s.setAllowFileAccessFromFileURLs(false);
+        s.setAllowUniversalAccessFromFileURLs(false);
         s.setMediaPlaybackRequiresUserGesture(false);
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
         s.setSupportZoom(false);
+        s.setBuiltInZoomControls(false);
+        s.setDisplayZoomControls(false);
 
         web.addJavascriptInterface(new MusicBridge(), "__HashiruMusic");
 
@@ -105,7 +113,6 @@ public class MusicActivity extends Activity {
         }
 
         applySystemBars(getResources().getConfiguration().orientation);
-
         handleAudioIntent(getIntent());
         requestPerms();
 
@@ -180,6 +187,7 @@ public class MusicActivity extends Activity {
         if (uri == null) return;
         long id = resolveMediaStoreId(uri);
         if (id > 0) pendingPlayId = id;
+        else Log.w(TAG, "unrecognized audio URI: " + uri);
     }
 
     private long resolveMediaStoreId(Uri uri) {
@@ -233,6 +241,19 @@ public class MusicActivity extends Activity {
     @Override public void onRequestPermissionsResult(int req, String[] perms, int[] results) {
         super.onRequestPermissionsResult(req, perms, results);
         if (req == REQ_AUDIO_PERM) {
+            boolean postNotif = true;
+            if (Build.VERSION.SDK_INT >= 33) {
+                for (int i = 0; i < perms.length; i++) {
+                    if ("android.permission.POST_NOTIFICATIONS".equals(perms[i])
+                            && results[i] != PackageManager.PERMISSION_GRANTED) {
+                        postNotif = false;
+                    }
+                }
+            }
+            if (!postNotif) {
+                evalJs("window.__hashiruMusic && window.__hashiruMusic.notifyPermissionDenied && "
+                        + "window.__hashiruMusic.notifyPermissionDenied()");
+            }
             evalJs("window.__hashiruMusic && window.__hashiruMusic.rescan && window.__hashiruMusic.rescan()");
         }
     }
@@ -343,13 +364,33 @@ public class MusicActivity extends Activity {
         super.onDestroy();
     }
 
+    /** Safe way to start the service for any command. */
+    private void startServiceSafe(Intent i) {
+        try {
+            if (Build.VERSION.SDK_INT >= 26) {
+                startService(i);
+            } else {
+                startService(i);
+            }
+        } catch (Exception e) {
+            Log.w(BRIDGE_TAG, "service start failed for " + i.getAction(), e);
+        }
+    }
+
     public class MusicBridge {
 
-        @JavascriptInterface public long consumePendingPlayId() {
-            long id = pendingPlayId; pendingPlayId = -1; return id;
+        @JavascriptInterface
+        public long consumePendingPlayId() {
+            long id = pendingPlayId;
+            pendingPlayId = -1;
+            return id;
         }
 
-        @JavascriptInterface public void onPlay(final String title, final String artist, final long songId) {
+        @JavascriptInterface
+        public void onPlay(final String title, final String artist,
+                           final long songId, final long posMs, final long durMs) {
+            Log.d(BRIDGE_TAG, "onPlay title=" + title + " id=" + songId
+                    + " pos=" + posMs + " dur=" + durMs);
             runOnUiThread(() -> {
                 try {
                     Intent i = new Intent(MusicActivity.this, MusicPlaybackService.class);
@@ -357,9 +398,16 @@ public class MusicActivity extends Activity {
                     i.putExtra(MusicPlaybackService.EXTRA_TITLE, title);
                     i.putExtra(MusicPlaybackService.EXTRA_ARTIST, artist);
                     i.putExtra(MusicPlaybackService.EXTRA_SONG_ID, songId);
-                    if (Build.VERSION.SDK_INT >= 26) startForegroundService(i);
-                    else startService(i);
-                } catch (Exception e) { Log.w(TAG, "service start failed", e); }
+                    i.putExtra(MusicPlaybackService.EXTRA_POSITION, posMs);
+                    i.putExtra(MusicPlaybackService.EXTRA_DURATION, durMs);
+                    if (Build.VERSION.SDK_INT >= 26) {
+                        startForegroundService(i);
+                    } else {
+                        startService(i);
+                    }
+                } catch (Exception e) {
+                    Log.e(BRIDGE_TAG, "onPlay service start failed", e);
+                }
             });
         }
 
@@ -368,7 +416,7 @@ public class MusicActivity extends Activity {
                 try {
                     Intent i = new Intent(MusicActivity.this, MusicPlaybackService.class);
                     i.setAction(MusicPlaybackService.ACTION_PAUSE);
-                    startService(i);
+                    startServiceSafe(i);
                 } catch (Exception ignored) {}
             });
         }
@@ -378,12 +426,11 @@ public class MusicActivity extends Activity {
                 try {
                     Intent i = new Intent(MusicActivity.this, MusicPlaybackService.class);
                     i.setAction(MusicPlaybackService.ACTION_STOP);
-                    startService(i);
+                    startServiceSafe(i);
                 } catch (Exception ignored) {}
             });
         }
 
-        /** Pushed from JS roughly once per second while playing. */
         @JavascriptInterface public void onPosition(final long posMs, final long durMs) {
             runOnUiThread(() -> {
                 try {
@@ -391,7 +438,7 @@ public class MusicActivity extends Activity {
                     i.setAction(MusicPlaybackService.ACTION_UPDATE_POSITION);
                     i.putExtra(MusicPlaybackService.EXTRA_POSITION, posMs);
                     i.putExtra(MusicPlaybackService.EXTRA_DURATION, durMs);
-                    startService(i);
+                    startServiceSafe(i);
                 } catch (Exception ignored) {}
             });
         }
@@ -401,7 +448,7 @@ public class MusicActivity extends Activity {
                 try {
                     Intent i = new Intent(MusicActivity.this, MusicPlaybackService.class);
                     i.setAction(MusicPlaybackService.ACTION_UPDATE_META);
-                    startService(i);
+                    startServiceSafe(i);
                 } catch (Exception ignored) {}
             });
         }
@@ -424,20 +471,14 @@ public class MusicActivity extends Activity {
         }
 
         @JavascriptInterface public String getWallpaperTheme() {
-            if (Build.VERSION.SDK_INT >= 31) {
-                try {
-                    WallpaperManager wm = WallpaperManager.getInstance(MusicActivity.this);
-                    WallpaperColors wc = wm.getWallpaperColors(WallpaperManager.FLAG_SYSTEM);
-                    if (wc != null && wc.getPrimaryColor() != null) {
-                        float[] hsv = new float[3];
-                        Color.colorToHSV(wc.getPrimaryColor().toArgb(), hsv);
-                        return "{\"hue\":" + hsv[0] + "}";
-                    }
-                } catch (Exception e) {
-                    Log.w(TAG, "wallpaper colors failed", e);
-                }
+            try {
+                String result = DynamicTheme.getWallpaperTheme(MusicActivity.this);
+                Log.d(BRIDGE_TAG, "getWallpaperTheme=" + result);
+                return result;
+            } catch (Throwable e) {
+                Log.e(BRIDGE_TAG, "getWallpaperTheme failed", e);
+                return "{\"ok\":false,\"error\":\"exception\"}";
             }
-            return "{\"hue\":-1}";
         }
 
         @JavascriptInterface public boolean getSystemDark() {
