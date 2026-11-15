@@ -9,8 +9,9 @@ public class ReaderSettings {
     public static final String KEY_THEME = "reader_theme";
     public static final String KEY_FONT = "reader_font";
     public static final String KEY_SIZE = "reader_size";
-    public static final String KEY_BLUR = "reader_blur";
+    public static final String KEY_BLUR = "reader_blur";       // kept for compat, no longer toggled
     public static final String KEY_ERUDA = "eruda_enabled";
+    public static final String KEY_AUTOSAVE = "reader_autosave";
 
     public static final String[] THEME_VALUES = {
         "dark", "nord", "gruvbox", "things", "paper"
@@ -36,6 +37,7 @@ public class ReaderSettings {
     public int fontSize = 15;
     public boolean blurEnabled = true;
     public boolean erudaEnabled = false;
+    public boolean autosaveEnabled = false;
 
     public static ReaderSettings load(Context ctx) {
         SharedPreferences p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
@@ -45,6 +47,7 @@ public class ReaderSettings {
         s.fontSize = p.getInt(KEY_SIZE, 15);
         s.blurEnabled = p.getBoolean(KEY_BLUR, true);
         s.erudaEnabled = p.getBoolean(KEY_ERUDA, false);
+        s.autosaveEnabled = p.getBoolean(KEY_AUTOSAVE, false);
         return s;
     }
 

@@ -28,6 +28,11 @@ public class ReaderRenderer {
             .sanitizeUrls(true)
             .build();
 
+    /**
+     * Renders a file. Markdown/text → parsed. CSV → table.
+     * Anything else (js, css, json, xml, yaml, ...) → plain <pre> with
+     * the pencil edit button so users can edit in-place.
+     */
     public static String render(String ext, String raw,
                                 ReaderSettings settings,
                                 int sbhDp, int nbhDp, boolean blurEnabled) {
@@ -41,13 +46,107 @@ public class ReaderRenderer {
             Node doc = PARSER.parse(raw);
             convertSoftBreaksToHard(doc);
             body = RENDERER.render(doc);
-            body = body.replaceAll("(?s)<!--.*?-->", "");
             body = body.replace("<table>", "<div class=\"table-wrap\"><table>")
                        .replace("</table>", "</table></div>");
         } else {
             body = "<pre class=\"plain\">" + escapeHtml(raw) + "</pre>";
         }
         return wrap(body, raw, settings, sbhDp, nbhDp, blurEnabled);
+    }
+
+    /**
+     * HTML edit mode — plain textarea with SAVE + DONE. No pencil toggle,
+     * no in-place view/edit switching. Done saves and finishes the activity.
+     */
+    public static String renderEditor(String ext, String raw,
+                                      ReaderSettings settings,
+                                      int sbhDp, int nbhDp, boolean blurEnabled) {
+        Palette p = paletteFor(settings.theme);
+        String langLabel = ext.toUpperCase();
+        String escaped = escapeHtml(raw);
+
+        int headerTop = sbhDp + 8;
+        int editorTop = sbhDp + 56;
+        boolean autosave = settings.autosaveEnabled;
+
+        return "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+            + "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">"
+            + "<style>"
+            + "*{box-sizing:border-box;}"
+            + "html,body{margin:0;padding:0;background:" + p.bg + ";color:" + p.text + ";"
+            +   "font-family:ui-monospace,Menlo,Consolas,monospace;height:100vh;overflow:hidden;}"
+            + "#header{position:fixed;top:0;left:0;right:0;background:" + p.preBg + ";"
+            +   "padding:" + headerTop + "px 12px 8px;display:flex;align-items:center;gap:8px;"
+            +   "border-bottom:1px solid " + p.border + ";z-index:100;}"
+            + "#header .label{flex:1;font-weight:bold;letter-spacing:1px;"
+            +   "color:" + p.accent + ";font-size:12px;text-transform:uppercase;}"
+            + "#header button{padding:8px 14px;background:transparent;color:" + p.text + ";"
+            +   "border:1px solid " + p.border + ";border-radius:4px;"
+            +   "font-family:inherit;font-weight:bold;font-size:12px;cursor:pointer;"
+            +   "-webkit-tap-highlight-color:transparent;}"
+            + "#header button:hover{background:" + p.text + ";color:" + p.bg + ";}"
+            + "#header button:active{transform:scale(0.96);}"
+            + "#autosave-label{font-size:10px;color:" + p.blockquoteFg + ";}"
+            + "#editor{position:fixed;top:" + editorTop + "px;bottom:0;left:0;right:0;"
+            +   "width:100%;height:auto;padding:16px;background:" + p.bg + ";"
+            +   "color:" + p.text + ";border:none;outline:none;"
+            +   "font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;"
+            +   "line-height:1.5;resize:none;overflow-y:auto;}"
+            + "</style></head><body>"
+            + "<div id=\"header\">"
+            +   "<span class=\"label\">EDIT · " + escapeHtml(langLabel) + "</span>"
+            +   (autosave ? "<span id=\"autosave-label\">AUTOSAVE ON</span>" : "")
+            +   "<button id=\"save\">SAVE</button>"
+            +   "<button id=\"done\">DONE</button>"
+            + "</div>"
+            + "<textarea id=\"editor\" spellcheck=\"false\" autocorrect=\"off\" "
+            +   "autocapitalize=\"off\">" + escaped + "</textarea>"
+            + "<script>"
+            + "var editor=document.getElementById('editor');"
+            + "var original=editor.value;"
+            + "var autosave=" + (autosave ? "true" : "false") + ";"
+            + "var autosaveTimer=null;"
+            + "var dirty=false;"
+            + "function saveNow(){"
+            +   "if(editor.value===original)return true;"
+            +   "try{"
+            +     "var ok=__HashiruNative.saveOnly(editor.value);"
+            +     "if(ok){original=editor.value;dirty=false;}"
+            +     "return ok;"
+            +   "}catch(e){return false;}"
+            + "}"
+            + "function scheduleAutosave(){"
+            +   "if(!autosave)return;"
+            +   "dirty=true;"
+            +   "clearTimeout(autosaveTimer);"
+            +   "autosaveTimer=setTimeout(saveNow,1500);"
+            + "}"
+            + "editor.addEventListener('input',scheduleAutosave);"
+            + "document.getElementById('save').onclick=function(){"
+            +   "clearTimeout(autosaveTimer);"
+            +   "var b=this;"
+            +   "if(saveNow()){"
+            +     "b.textContent='SAVED';"
+            +     "setTimeout(function(){b.textContent='SAVE';},1500);"
+            +   "}else{"
+            +     "b.textContent='FAILED';"
+            +     "setTimeout(function(){b.textContent='SAVE';},1500);"
+            +   "}"
+            + "};"
+            + "document.getElementById('done').onclick=function(){"
+            +   "clearTimeout(autosaveTimer);"
+            +   "if((dirty||editor.value!==original) && !saveNow()){"
+            +     "alert('Save failed — check storage permission');"
+            +     "return;"
+            +   "}"
+            +   "try{__HashiruNative.finishActivity();}catch(e){history.back();}"
+            + "};"
+            + "window.addEventListener('beforeunload',function(){"
+            +   "if(dirty||editor.value!==original){"
+            +     "try{__HashiruNative.saveOnly(editor.value);}catch(e){}"
+            +   "}"
+            + "});"
+            + "</script></body></html>";
     }
 
     private static void convertSoftBreaksToHard(Node node) {
@@ -64,8 +163,6 @@ public class ReaderRenderer {
             child = next;
         }
     }
-
-    // ---- CSV ----
 
     private static String renderCsv(String raw) {
         List<String[]> rows = parseCsv(raw);
@@ -134,8 +231,6 @@ public class ReaderRenderer {
         return rows;
     }
 
-    // ---- helpers ----
-
     public static int backgroundArgb(String theme) {
         switch (theme) {
             case "nord":    return 0xFF2e3440;
@@ -176,6 +271,7 @@ public class ReaderRenderer {
         Palette p = paletteFor(s.theme);
         String css = themeCss(s, p, sbhDp, nbhDp, blurEnabled);
         String sourceJson = jsonEscape(rawSource);
+        boolean autosave = s.autosaveEnabled;
 
         String csp = "default-src 'none'; "
                    + "img-src 'self' data:; "
@@ -200,6 +296,7 @@ public class ReaderRenderer {
              + "<div id=\"hashiru-statusblur\"></div>"
              + "<div id=\"hashiru-navblur\"></div>"
              + "<script id=\"hashiru-source\" type=\"application/json\">" + sourceJson + "</script>"
+             + "<script>var __hashiruAutosave = " + (autosave ? "true" : "false") + ";</script>"
              + "<script>" + EDIT_SCRIPT + "</script>"
              + "</body></html>";
     }
@@ -242,10 +339,8 @@ public class ReaderRenderer {
         int size = s.fontSize;
 
         int contentTop = sbhDp + 68;
-
         int navBarDp  = nbhDp > 0 ? nbhDp : 24;
         int bottomPad = navBarDp + 40;
-
         int btnTop    = sbhDp + 12;
         int sbTop     = sbhDp + 8;
         int editorTop = contentTop;
@@ -255,9 +350,6 @@ public class ReaderRenderer {
         int topFadeH = sbhDp + 6;
         int botFadeH = navBarDp + 6;
 
-        // Stronger fade — text is visible (dimmed) at every point, but the
-        // top of the mask is clearly denser than before so the fade is
-        // actually perceptible. 0.80 == 20% of text still shows through.
         String topMask = "linear-gradient(to bottom,"
             + "rgba(0,0,0,0.80) 0%,"
             + "rgba(0,0,0,0.35) 50%,"
@@ -365,12 +457,6 @@ public class ReaderRenderer {
             +   "width:4px;min-height:24px;"
             +   "background:rgba(127,127,127,0.55);border-radius:2px;"
             +   "pointer-events:none;}"
-            // ---- Landscape ----
-            // Status bar is transparent (text flows behind, top fade visible).
-            // Nav bar is opaque theme-color (content does NOT go behind it), so
-            // there's no bottom fade and no extra bottom padding for it.
-            // sbhDp-derived offsets (button top, editor top) stay as-is —
-            // they still clear the transparent status bar.
             + "@media (orientation:landscape){"
             +   "#hashiru-navblur{display:none !important;}"
             +   "body{max-width:none;"
@@ -510,6 +596,8 @@ public class ReaderRenderer {
       + "var current=srcEl?JSON.parse(srcEl.textContent):'';"
       + "var editing=false;"
       + "var editStartScrollY=0;"
+      + "var autosave=(typeof __hashiruAutosave!=='undefined')?__hashiruAutosave:false;"
+      + "var autosaveTimer=null;"
 
       + "function fitEditor(){"
       + "  try{var vv=window.visualViewport;"
@@ -520,6 +608,19 @@ public class ReaderRenderer {
       + "if(window.visualViewport)"
       + "  window.visualViewport.addEventListener('resize',fitEditor);"
       + "window.addEventListener('resize',fitEditor);"
+
+      + "function scheduleAutosave(){"
+      + "  if(!autosave||!editing)return;"
+      + "  clearTimeout(autosaveTimer);"
+      + "  autosaveTimer=setTimeout(function(){"
+      + "    var v=editor.value;"
+      + "    if(v===current)return;"
+      + "    try{"
+      + "      var ok=__HashiruNative.saveOnly(v);"
+      + "      if(ok)current=v;"
+      + "    }catch(e){}"
+      + "  },1500);"
+      + "}"
 
       + "function updateScrollbar(){"
       + "  if(!sbTrack||!sbThumb)return;"
@@ -591,6 +692,7 @@ public class ReaderRenderer {
 
       + "function exitEdit(save){"
       + "  if(!editing)return;"
+      + "  clearTimeout(autosaveTimer);"
       + "  editing=false;"
       + "  var v=editor.value;"
       + "  editor.style.display='none';"
@@ -609,6 +711,8 @@ public class ReaderRenderer {
       + "    setTimeout(updateScrollbar,300);"
       + "  }"
       + "}"
+
+      + "editor.addEventListener('input',scheduleAutosave);"
 
       + "editBtn.addEventListener('click',function(e){e.preventDefault();enterEdit();});"
       + "doneBtn.addEventListener('click',function(e){e.preventDefault();exitEdit(true);});"

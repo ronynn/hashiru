@@ -25,7 +25,6 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import fi.iki.elonen.NanoHTTPD;
 
-/** Music routes: library scan, Range-aware stream, covers, favs, metadata, assets. */
 final class MusicRoutes {
 
     private static final String TAG = "MusicRoutes";
@@ -55,7 +54,7 @@ final class MusicRoutes {
                     "Music not ready");
 
         if (uri.equals("_music") || uri.equals("_music/") || uri.equals("_music/index.html"))
-            return serveAsset("music.html", "text/html");
+            return serveMusicIndex();
         if (uri.equals("_music/music.css"))
             return serveAsset("music.css", "text/css");
         if (uri.equals("_music/lib"))
@@ -72,18 +71,55 @@ final class MusicRoutes {
         return HttpUtils.plain(NanoHTTPD.Response.Status.NOT_FOUND, "Music route not found");
     }
 
-    private NanoHTTPD.Response serveAsset(String assetPath, String mime) {
-        String content = assetCache.get(assetPath);
-        if (content == null) {
+    /**
+     * Inlines music.css into music.html at serve time. Some OEM WebViews
+     * (Nothing OS, some Samsung) silently drop external stylesheet requests
+     * against 127.0.0.1 when the response carries `Cache-Control: no-store`.
+     * Inlining removes the second HTTP request entirely.
+     */
+    private NanoHTTPD.Response serveMusicIndex() {
+        String html = readAsset("music.html");
+        if (html == null)
+            return HttpUtils.plain(NanoHTTPD.Response.Status.NOT_FOUND,
+                    "music.html missing in assets");
+
+        String css = readAsset("music.css");
+        if (css != null) {
             try {
-                InputStream in = appContext.getAssets().open(assetPath);
-                content = HttpUtils.readAll(in);
-                assetCache.put(assetPath, content);
-            } catch (IOException e) {
-                return HttpUtils.plain(NanoHTTPD.Response.Status.NOT_FOUND,
-                        "asset missing: " + assetPath);
+                html = html.replaceAll(
+                        "<link\\s+rel=[\"']stylesheet[\"']\\s+href=[\"'][^\"']*music\\.css[\"'][^>]*>",
+                        java.util.regex.Matcher.quoteReplacement(
+                                "<style>" + css + "</style>"));
+            } catch (Exception e) {
+                Log.w(TAG, "inline css failed", e);
             }
         }
+
+        NanoHTTPD.Response r = NanoHTTPD.newFixedLengthResponse(
+                NanoHTTPD.Response.Status.OK, "text/html; charset=utf-8", html);
+        r.addHeader("Cache-Control", "no-store");
+        return r;
+    }
+
+    private String readAsset(String path) {
+        String cached = assetCache.get(path);
+        if (cached != null) return cached;
+        try {
+            InputStream in = appContext.getAssets().open(path);
+            String content = HttpUtils.readAll(in);
+            assetCache.put(path, content);
+            return content;
+        } catch (IOException e) {
+            Log.w(TAG, "readAsset failed: " + path, e);
+            return null;
+        }
+    }
+
+    private NanoHTTPD.Response serveAsset(String assetPath, String mime) {
+        String content = readAsset(assetPath);
+        if (content == null)
+            return HttpUtils.plain(NanoHTTPD.Response.Status.NOT_FOUND,
+                    "asset missing: " + assetPath);
         NanoHTTPD.Response r = NanoHTTPD.newFixedLengthResponse(
                 NanoHTTPD.Response.Status.OK, mime + "; charset=utf-8", content);
         r.addHeader("Cache-Control", "no-store");
@@ -192,15 +228,12 @@ final class MusicRoutes {
                 }
             } catch (Exception e) {
                 Log.w(TAG, "music lib scan failed", e);
-            } finally {
-                if (c != null) c.close();
-            }
+            } finally { if (c != null) c.close(); }
         }
 
         sb.append("]}");
         NanoHTTPD.Response r = NanoHTTPD.newFixedLengthResponse(
-                NanoHTTPD.Response.Status.OK,
-                "application/json; charset=utf-8", sb.toString());
+                NanoHTTPD.Response.Status.OK, "application/json; charset=utf-8", sb.toString());
         r.addHeader("Cache-Control", "no-store");
         return r;
     }

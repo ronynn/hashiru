@@ -16,13 +16,17 @@ import java.util.Set;
 
 import fi.iki.elonen.NanoHTTPD;
 
-/** Reader-side routes: SAF tree, markdown/html/csv rendered on-the-fly, asset passthrough. */
 final class ReaderRoutes {
 
     private static final String TAG = "ReaderRoutes";
 
+    /** Rendered by `render()` — md/txt via markdown, csv via table. */
     private static final Set<String> READER_EXTS = new HashSet<>(
             Arrays.asList("md", "markdown", "txt", "org", "twee", "csv"));
+
+    /** Rendered as plain text with pencil. */
+    private static final Set<String> PLAIN_EXTS = new HashSet<>(
+            Arrays.asList("js", "mjs", "css", "json", "xml", "yml", "yaml"));
 
     private final Uri treeUri;
     private final String rootDocId;
@@ -39,16 +43,18 @@ final class ReaderRoutes {
     NanoHTTPD.Response serve(String uri, NanoHTTPD.IHTTPSession session) {
         int sbhDp = 0, nbhDp = 0;
         boolean blur = true;
+        boolean editMode = false;
         try {
             Map<String, String> parms = session.getParms();
             String sbh = parms.get("sbh");  if (sbh != null) sbhDp = Integer.parseInt(sbh);
             String nbh = parms.get("nbh");  if (nbh != null) nbhDp = Integer.parseInt(nbh);
             String b   = parms.get("blur"); if (b   != null) blur  = "1".equals(b);
+            String e   = parms.get("edit"); if (e   != null) editMode = "1".equals(e);
         } catch (Exception ignored) {}
 
         try {
             if (uri.isEmpty())
-                return serveDirOrIndex(rootDocId, "/", sbhDp, nbhDp, blur, session);
+                return serveDirOrIndex(rootDocId, "/", sbhDp, nbhDp, blur, editMode, session);
 
             String cur = rootDocId;
             for (String part : uri.split("/")) {
@@ -59,7 +65,7 @@ final class ReaderRoutes {
                             "Not found: " + uri);
                 cur = next;
             }
-            return serveDoc(cur, uri, sbhDp, nbhDp, blur, session);
+            return serveDoc(cur, uri, sbhDp, nbhDp, blur, editMode, session);
         } catch (Exception e) {
             Log.w(TAG, "serve failed for " + uri, e);
             return HttpUtils.plain(NanoHTTPD.Response.Status.INTERNAL_ERROR,
@@ -69,9 +75,9 @@ final class ReaderRoutes {
 
     private NanoHTTPD.Response serveDirOrIndex(String dirDocId, String pathForError,
                                                int sbhDp, int nbhDp, boolean blur,
-                                               NanoHTTPD.IHTTPSession session) {
+                                               boolean editMode, NanoHTTPD.IHTTPSession session) {
         String id = findChild(dirDocId, "index.html");
-        if (id != null) return serveDoc(id, pathForError, sbhDp, nbhDp, blur, session);
+        if (id != null) return serveDoc(id, pathForError, sbhDp, nbhDp, blur, editMode, session);
         return HttpUtils.plain(NanoHTTPD.Response.Status.NOT_FOUND,
                 "No index.html at " + pathForError);
     }
@@ -93,7 +99,7 @@ final class ReaderRoutes {
 
     private NanoHTTPD.Response serveDoc(String docId, String pathForError,
                                         int sbhDp, int nbhDp, boolean blur,
-                                        NanoHTTPD.IHTTPSession session) {
+                                        boolean editMode, NanoHTTPD.IHTTPSession session) {
         Uri docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId);
 
         String mime = null, name = null;
@@ -115,12 +121,18 @@ final class ReaderRoutes {
         }
 
         if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime))
-            return serveDirOrIndex(docId, pathForError, sbhDp, nbhDp, blur, session);
+            return serveDirOrIndex(docId, pathForError, sbhDp, nbhDp, blur, editMode, session);
 
         String ext = extensionOf(name);
+        boolean isHtml = ext.equals("html") || ext.equals("htm");
+        boolean isPlain  = PLAIN_EXTS.contains(ext);
 
-        // Reader path — rendered HTML on the fly
-        if (READER_EXTS.contains(ext)) {
+        // Rendered path
+        boolean needsRender = READER_EXTS.contains(ext)
+                || isPlain
+                || (isHtml && editMode);
+
+        if (needsRender) {
             try {
                 InputStream in = resolver.openInputStream(docUri);
                 if (in == null)
@@ -128,7 +140,17 @@ final class ReaderRoutes {
                 String raw = HttpUtils.readAll(in);
                 ReaderSettings settings = appContext != null
                         ? ReaderSettings.load(appContext) : new ReaderSettings();
-                String html = ReaderRenderer.render(ext, raw, settings, sbhDp, nbhDp, blur);
+
+                String html;
+                if (isHtml && editMode) {
+                    html = ReaderRenderer.renderEditor(ext, raw, settings, sbhDp, nbhDp, blur);
+                } else {
+                    // render() routes known markdown/csv; everything else
+                    // (including .js/.css/.json) becomes <pre class="plain">
+                    // with the pencil edit button.
+                    html = ReaderRenderer.render(ext, raw, settings, sbhDp, nbhDp, blur);
+                }
+
                 NanoHTTPD.Response r = NanoHTTPD.newFixedLengthResponse(
                         NanoHTTPD.Response.Status.OK, "text/html; charset=utf-8", html);
                 r.addHeader("Cache-Control", "no-store");
@@ -138,7 +160,7 @@ final class ReaderRoutes {
             }
         }
 
-        // Non-reader path — ETag-based revalidating cache
+        // Raw serve path — HTML run mode, images, audio, etc. ETag revalidation.
         String etag = "\"" + docId + "-" + lastModified + "\"";
         boolean hasValidator = lastModified > 0;
 
@@ -153,8 +175,7 @@ final class ReaderRoutes {
             }
         }
 
-        if (ext.equals("html") || ext.equals("htm"))
-            mime = "text/html; charset=utf-8";
+        if (isHtml) mime = "text/html; charset=utf-8";
         else if (mime == null || "application/octet-stream".equals(mime))
             mime = HttpUtils.guessMime(name);
 

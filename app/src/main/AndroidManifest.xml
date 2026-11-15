@@ -31,6 +31,7 @@
             android:name=".MusicActivity"
             android:exported="true"
             android:launchMode="singleTask"
+            android:taskAffinity="io.github.ronynn.hashiru.music"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/MusicTheme">

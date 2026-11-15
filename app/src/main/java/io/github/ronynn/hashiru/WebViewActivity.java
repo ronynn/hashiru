@@ -53,8 +53,9 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class WebViewActivity extends Activity {
 
-    public static final String EXTRA_TREE_URI = "tree_uri";
-    public static final String EXTRA_REL_PATH = "rel_path";
+    public static final String EXTRA_TREE_URI  = "tree_uri";
+    public static final String EXTRA_REL_PATH  = "rel_path";
+    public static final String EXTRA_EDIT_MODE = "edit_mode";
 
     private static final String TAG = "WebViewActivity";
     private static final String POS_PREFS = "hashiru_positions";
@@ -77,12 +78,13 @@ public class WebViewActivity extends Activity {
     private String posKey;
     private boolean restorePending = true;
     private int pendingRestoreY = -1;
-
     private boolean clearHistoryOnNextFinish = false;
 
     private ValueCallback<Uri[]> fileChooserCallback;
     private String currentExt = "";
     private boolean isReader = false;
+    private boolean isCodeFile = false;
+    private boolean editMode = false;
     private int statusBarHeight = 0;
     private int navBarHeight = -1;
     private ReaderSettings settings;
@@ -98,7 +100,6 @@ public class WebViewActivity extends Activity {
     private MediaSession mediaSession;
     private boolean mediaPlaying = false;
     private String currentMediaTitle = "Media";
-
     private final int notifId = System.identityHashCode(this) & 0x7FFFFFFF;
 
     private final BroadcastReceiver mediaCmdReceiver = new BroadcastReceiver() {
@@ -110,8 +111,7 @@ public class WebViewActivity extends Activity {
         }
     };
 
-    @Override
-    protected void onCreate(Bundle b) {
+    @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         setContentView(R.layout.activity_webview);
 
@@ -120,6 +120,7 @@ public class WebViewActivity extends Activity {
 
         String treeUriStr = getIntent().getStringExtra(EXTRA_TREE_URI);
         String relPath = getIntent().getStringExtra(EXTRA_REL_PATH);
+        editMode = getIntent().getBooleanExtra(EXTRA_EDIT_MODE, false);
         Uri directUri = null;
         if (!(treeUriStr != null && relPath != null)
                 && Intent.ACTION_VIEW.equals(getIntent().getAction())
@@ -128,7 +129,7 @@ public class WebViewActivity extends Activity {
         }
 
         if (treeUriStr != null && relPath != null) {
-            ident = "tree|" + treeUriStr + "|" + relPath;
+            ident = "tree|" + treeUriStr + "|" + relPath + (editMode ? "|edit" : "");
             currentExt = extOf(relPath);
         } else if (directUri != null) {
             ident = "uri|" + directUri.toString();
@@ -137,7 +138,12 @@ public class WebViewActivity extends Activity {
             finish();
             return;
         }
-        isReader = isReaderExt(currentExt);
+
+        isCodeFile = isCodeExt(currentExt);
+        boolean isHtmlFile = currentExt.equals("html") || currentExt.equals("htm");
+        isReader = isCodeFile
+                || (isHtmlFile && editMode)
+                || isReaderExt(currentExt);
 
         WebViewActivity existing = findExisting(ident);
         if (existing != null && existing != this && !existing.isFinishing()) {
@@ -165,12 +171,25 @@ public class WebViewActivity extends Activity {
             registerReceiver(mediaCmdReceiver, filter);
 
         web = findViewById(R.id.web);
-        web.setBackgroundColor(bg);
-        web.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        web.setVerticalScrollBarEnabled(false);
-        web.setHorizontalScrollBarEnabled(false);
+        configureWebView(web, bg);
 
-        WebSettings s = web.getSettings();
+        posPrefs = getSharedPreferences(POS_PREFS, MODE_PRIVATE);
+        web.addJavascriptInterface(new SaveBridge(), "__HashiruNative");
+
+        if (treeUriStr != null && relPath != null) {
+            openFromTree(treeUriStr, relPath);
+        } else {
+            openDirectFile(directUri);
+        }
+    }
+
+    private void configureWebView(WebView w, int bg) {
+        w.setBackgroundColor(bg);
+        w.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        w.setVerticalScrollBarEnabled(false);
+        w.setHorizontalScrollBarEnabled(false);
+
+        WebSettings s = w.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
         s.setAllowContentAccess(true);
@@ -183,26 +202,10 @@ public class WebViewActivity extends Activity {
         s.setBuiltInZoomControls(true);
         s.setDisplayZoomControls(false);
 
-        posPrefs = getSharedPreferences(POS_PREFS, MODE_PRIVATE);
-        web.addJavascriptInterface(new SaveBridge(), "__HashiruNative");
-
-        web.setWebViewClient(new WebViewClient() {
+        w.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req) {
-                Uri u = req.getUrl();
-                if (u == null) return false;
-                String scheme = u.getScheme();
-                if (scheme == null) return false;
-                if ("http".equals(scheme) || "https".equals(scheme)) {
-                    String host = u.getHost();
-                    if ("127.0.0.1".equals(host) || "localhost".equals(host)) return false;
-                }
-                try {
-                    Intent i = new Intent(Intent.ACTION_VIEW, u);
-                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    startActivity(i);
-                } catch (ActivityNotFoundException ignored) {}
-                return true;
+                return interceptNavigation(req.getUrl());
             }
 
             @Override
@@ -240,9 +243,9 @@ public class WebViewActivity extends Activity {
             }
         });
 
-        web.setWebChromeClient(new WebChromeClient() {
+        w.setWebChromeClient(new WebChromeClient() {
             @Override
-            public boolean onShowFileChooser(WebView w, ValueCallback<Uri[]> cb,
+            public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> cb,
                                              FileChooserParams params) {
                 if (fileChooserCallback != null) fileChooserCallback.onReceiveValue(null);
                 fileChooserCallback = cb;
@@ -257,18 +260,28 @@ public class WebViewActivity extends Activity {
             }
         });
 
-        web.setDownloadListener(new DownloadListener() {
+        w.setDownloadListener(new DownloadListener() {
             @Override public void onDownloadStart(String url, String ua, String cd,
                                                   String mime, long len) {
                 handleDownload(url, mime);
             }
         });
+    }
 
-        if (treeUriStr != null && relPath != null) {
-            openFromTree(treeUriStr, relPath);
-        } else {
-            openDirectFile(directUri);
+    private boolean interceptNavigation(Uri u) {
+        if (u == null) return false;
+        String scheme = u.getScheme();
+        if (scheme == null) return false;
+        if ("http".equals(scheme) || "https".equals(scheme)) {
+            String host = u.getHost();
+            if ("127.0.0.1".equals(host) || "localhost".equals(host)) return false;
         }
+        try {
+            Intent i = new Intent(Intent.ACTION_VIEW, u);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
+        } catch (ActivityNotFoundException ignored) {}
+        return true;
     }
 
     private WebResourceResponse blockExternalForReader(String url) {
@@ -315,7 +328,7 @@ public class WebViewActivity extends Activity {
     }
 
     private void openFromTree(String treeUriStr, String relPath) {
-        posKey = treeUriStr + "|" + relPath;
+        posKey = treeUriStr + "|" + relPath + (editMode ? "|edit" : "");
         currentTreeUri = Uri.parse(treeUriStr);
         currentRelPath = relPath;
 
@@ -346,22 +359,28 @@ public class WebViewActivity extends Activity {
             String baseUrl = "https://hashiru.local/"
                     + Uri.encode(fileUri.toString()) + "/";
 
-            if (currentExt.equals("html") || currentExt.equals("htm")) {
-                web.loadDataWithBaseURL(baseUrl, raw, "text/html", "utf-8", null);
-                return;
-            }
-            String html;
-            if (isReader) {
-                html = ReaderRenderer.render(
-                        currentExt, raw, settings,
-                        currentSbhDp(), currentNbhDp(), settings.blurEnabled);
-            } else {
-                html = ReaderRenderer.render(
-                        "txt", raw, settings,
-                        currentSbhDp(), currentNbhDp(), settings.blurEnabled);
-            }
+            String html = renderForExt(currentExt, raw);
             web.loadDataWithBaseURL(baseUrl, html, "text/html", "utf-8", null);
         } catch (IOException e) { finish(); }
+    }
+
+    /**
+     * Renders content for direct-open path (from ACTION_VIEW intents).
+     * - HTML in run mode → raw
+     * - HTML in edit mode → full-page editor
+     * - Everything else → ReaderRenderer.render() which handles md/txt/csv
+     *   as before and everything else (js/css/json/xml/yaml) as plain <pre>
+     *   with the standard pencil-edit flow.
+     */
+    private String renderForExt(String ext, String raw) {
+        boolean isHtmlFile = ext.equals("html") || ext.equals("htm");
+        if (isHtmlFile && !editMode) return raw;
+        if (isHtmlFile && editMode) {
+            return ReaderRenderer.renderEditor(ext, raw, settings,
+                    currentSbhDp(), currentNbhDp(), settings.blurEnabled);
+        }
+        return ReaderRenderer.render(ext, raw, settings,
+                currentSbhDp(), currentNbhDp(), settings.blurEnabled);
     }
 
     private String buildServerUrl() {
@@ -369,7 +388,8 @@ public class WebViewActivity extends Activity {
                 + "/" + encodePath(currentRelPath)
                 + "?sbh=" + currentSbhDp()
                 + "&nbh=" + currentNbhDp()
-                + "&blur=" + (settings.blurEnabled ? "1" : "0");
+                + "&blur=" + (settings.blurEnabled ? "1" : "0")
+                + (editMode ? "&edit=1" : "");
     }
 
     private int currentSbhDp() {
@@ -451,9 +471,6 @@ public class WebViewActivity extends Activity {
     public void onConfigurationChanged(Configuration cfg) {
         super.onConfigurationChanged(cfg);
         applyOrientation(cfg.orientation);
-        // Bars flip: portrait → transparent (content under both bars),
-        // landscape → transparent status bar + opaque nav bar.
-        // Body padding / fade hiding handled by CSS media query — no reload.
     }
 
     private void reloadCurrentFile() {
@@ -466,14 +483,7 @@ public class WebViewActivity extends Activity {
                 InputStream in = getContentResolver().openInputStream(currentDirectUri);
                 if (in == null) return;
                 String raw = readAllCapped(in);
-                String html;
-                if (currentExt.equals("html") || currentExt.equals("htm")) {
-                    html = raw;
-                } else {
-                    html = ReaderRenderer.render(
-                            currentExt, raw, settings,
-                            currentSbhDp(), currentNbhDp(), settings.blurEnabled);
-                }
+                String html = renderForExt(currentExt, raw);
                 String baseUrl = "https://hashiru.local/"
                         + Uri.encode(currentDirectUri.toString()) + "/";
                 web.loadDataWithBaseURL(baseUrl, html, "text/html", "utf-8", null);
@@ -499,6 +509,20 @@ public class WebViewActivity extends Activity {
             pendingRestoreY = Math.max(0, scrollY);
             runOnUiThread(WebViewActivity.this::reloadCurrentFile);
             return true;
+        }
+
+        @JavascriptInterface
+        public boolean saveOnly(String source) {
+            if (source == null) return false;
+            return saveSourceSync(source);
+        }
+
+        @JavascriptInterface
+        public void finishActivity() {
+            runOnUiThread(() -> {
+                savePosition();
+                finish();
+            });
         }
 
         @JavascriptInterface
@@ -579,9 +603,7 @@ public class WebViewActivity extends Activity {
             while (c.moveToNext())
                 if (name.equals(c.getString(1))) return c.getString(0);
         } catch (Exception ignored) {
-        } finally {
-            if (c != null) c.close();
-        }
+        } finally { if (c != null) c.close(); }
         return null;
     }
 
@@ -651,8 +673,7 @@ public class WebViewActivity extends Activity {
     }
 
     private void ensureMediaSession() {
-        if (Build.VERSION.SDK_INT < 21) return;
-        if (mediaSession != null) return;
+        if (Build.VERSION.SDK_INT < 21 || mediaSession != null) return;
         mediaSession = new MediaSession(this, "HashiruMedia_" + notifId);
         mediaSession.setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS
                 | MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS);
@@ -705,9 +726,8 @@ public class WebViewActivity extends Activity {
         if (iconRes == 0) iconRes = android.R.drawable.ic_media_play;
 
         Bitmap bigIcon = null;
-        try {
-            bigIcon = BitmapFactory.decodeResource(getResources(), iconRes);
-        } catch (Exception ignored) {}
+        try { bigIcon = BitmapFactory.decodeResource(getResources(), iconRes); }
+        catch (Exception ignored) {}
 
         Notification.Builder b;
         if (Build.VERSION.SDK_INT >= 26) b = new Notification.Builder(this, CHANNEL_ID);
@@ -729,9 +749,8 @@ public class WebViewActivity extends Activity {
 
         if (bigIcon != null) b.setLargeIcon(bigIcon);
 
-        try {
-            notificationManager().notify(notifId, b.build());
-        } catch (SecurityException e) {
+        try { notificationManager().notify(notifId, b.build()); }
+        catch (SecurityException e) {
             Log.d(TAG, "notification blocked (no POST_NOTIFICATIONS)");
         }
 
@@ -745,11 +764,9 @@ public class WebViewActivity extends Activity {
                     .setActions(PlaybackState.ACTION_PLAY
                             | PlaybackState.ACTION_PAUSE
                             | PlaybackState.ACTION_STOP)
-                    .setState(
-                            playing ? PlaybackState.STATE_PLAYING
-                                    : PlaybackState.STATE_PAUSED,
-                            PlaybackState.PLAYBACK_POSITION_UNKNOWN,
-                            1.0f)
+                    .setState(playing ? PlaybackState.STATE_PLAYING
+                                      : PlaybackState.STATE_PAUSED,
+                            PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1.0f)
                     .build();
             mediaSession.setPlaybackState(state);
         }
@@ -890,6 +907,12 @@ public class WebViewActivity extends Activity {
                 || ext.equals("csv");
     }
 
+    private boolean isCodeExt(String ext) {
+        return ext.equals("js") || ext.equals("mjs")
+                || ext.equals("css") || ext.equals("json")
+                || ext.equals("xml") || ext.equals("yml") || ext.equals("yaml");
+    }
+
     private String queryDisplayName(Uri uri) {
         Cursor c = null;
         try {
@@ -897,9 +920,7 @@ public class WebViewActivity extends Activity {
                     new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null);
             if (c != null && c.moveToFirst()) return c.getString(0);
         } catch (Exception ignored) {
-        } finally {
-            if (c != null) c.close();
-        }
+        } finally { if (c != null) c.close(); }
         return uri.getLastPathSegment();
     }
 
@@ -981,7 +1002,6 @@ public class WebViewActivity extends Activity {
         boolean portrait = orientation == Configuration.ORIENTATION_PORTRAIT;
 
         if (!isReader && !portrait) {
-            // HTML landscape → immersive fullscreen (unchanged).
             decor.setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                             | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
@@ -1002,9 +1022,6 @@ public class WebViewActivity extends Activity {
         if (isReader) {
             win.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
 
-            // Never let the OS inject its own contrast scrim. This is the fix
-            // for light themes showing a translucent-white nav bar even after
-            // setNavigationBarColor(TRANSPARENT).
             if (Build.VERSION.SDK_INT >= 29) {
                 win.setStatusBarContrastEnforced(false);
                 win.setNavigationBarContrastEnforced(false);
@@ -1014,22 +1031,14 @@ public class WebViewActivity extends Activity {
             int flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                       | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
 
-            // Status bar: always transparent — content flows behind it, the
-            // top fade overlay provides the fade-out in both orientations.
             win.setStatusBarColor(Color.TRANSPARENT);
 
             if (portrait) {
-                // Portrait also extends into the nav bar area.
                 win.setNavigationBarColor(Color.TRANSPARENT);
                 if (Build.VERSION.SDK_INT >= 28)
                     win.setNavigationBarDividerColor(Color.TRANSPARENT);
                 flags |= View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
             } else {
-                // Landscape: nav bar stays opaque theme-colored. Content
-                // doesn't flow behind it → edit button is never covered,
-                // and there's no black band under the status bar because
-                // the status bar itself is transparent and the WebView's
-                // content is drawn right up to the top.
                 win.setNavigationBarColor(themeBg);
                 if (Build.VERSION.SDK_INT >= 28)
                     win.setNavigationBarDividerColor(themeBg);
@@ -1043,9 +1052,6 @@ public class WebViewActivity extends Activity {
             }
             decor.setSystemUiVisibility(flags);
 
-            // Landscape: let content extend into the notch on the short edges
-            // (top/bottom in landscape) so no black stripes appear on the
-            // sides where the notch sits. Portrait keeps the safe DEFAULT.
             if (Build.VERSION.SDK_INT >= 30) {
                 lp.layoutInDisplayCutoutMode = portrait
                         ? WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
@@ -1056,7 +1062,6 @@ public class WebViewActivity extends Activity {
                         : WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
             }
         } else {
-            // HTML portrait: opaque chrome (unchanged).
             win.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
             win.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
             win.setStatusBarColor(BAR_COLOR_HTML);
