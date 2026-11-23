@@ -365,17 +365,19 @@ public class WebViewActivity extends Activity {
     }
 
     /**
-     * Renders content for direct-open path (from ACTION_VIEW intents).
-     * - HTML in run mode → raw
-     * - HTML in edit mode → full-page editor
-     * - Everything else → ReaderRenderer.render() which handles md/txt/csv
-     *   as before and everything else (js/css/json/xml/yaml) as plain <pre>
-     *   with the standard pencil-edit flow.
+     * Renders content for the direct-open path (from ACTION_VIEW intents).
+     *
+     *   HTML · run mode   → raw HTML (rendered as-is)
+     *   ANY  · edit mode  → full-page editor (same design for md/txt/csv/js/html)
+     *   everything else   → ReaderRenderer.render()
+     *
+     * The ONLY change from before is that the second branch now triggers
+     * on `editMode`, not just `isHtmlFile && editMode`.
      */
     private String renderForExt(String ext, String raw) {
         boolean isHtmlFile = ext.equals("html") || ext.equals("htm");
         if (isHtmlFile && !editMode) return raw;
-        if (isHtmlFile && editMode) {
+        if (editMode) {
             return ReaderRenderer.renderEditor(ext, raw, settings,
                     currentSbhDp(), currentNbhDp(), settings.blurEnabled);
         }

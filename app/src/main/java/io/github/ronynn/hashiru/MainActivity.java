@@ -6,6 +6,7 @@ import android.content.ComponentName;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.DocumentsContract;
@@ -17,6 +18,7 @@ import android.view.Window;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageButton;
+import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.PopupMenu;
 import android.widget.TextView;
@@ -43,6 +45,10 @@ public class MainActivity extends Activity {
     private String currentDocId;
     private final List<String> folderPath = new ArrayList<>();
 
+    // =====================================================================
+    // Lifecycle
+    // =====================================================================
+
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -55,7 +61,7 @@ public class MainActivity extends Activity {
         pathView = findViewById(R.id.path);
         Button pick = findViewById(R.id.pick);
         ImageButton menu = findViewById(R.id.menu);
-        ImageButton fab = findViewById(R.id.fab);
+        ImageButton add = findViewById(R.id.add);
 
         adapter = new FileListAdapter(this);
         list.setAdapter(adapter);
@@ -63,6 +69,7 @@ public class MainActivity extends Activity {
 
         pick.setOnClickListener(v -> pickFolder());
         menu.setOnClickListener(this::showSettingsMenu);
+        add.setOnClickListener(this::showNewItemMenu);
 
         list.setOnItemClickListener((p, v, pos, id) -> {
             SafDoc d = adapter.getItem(pos);
@@ -71,7 +78,7 @@ public class MainActivity extends Activity {
                 currentDocId = d.docId;
                 refresh();
             } else {
-                openInWebView(d, false);
+                openDocument(d, false);
             }
         });
 
@@ -81,21 +88,15 @@ public class MainActivity extends Activity {
             return true;
         });
 
-        fab.setOnClickListener(v -> showNewFileDialog());
-        fab.setOnLongClickListener(v -> {
-            showNewFolderDialog();
-            return true;
-        });
-
         String saved = getSharedPreferences(PREFS, MODE_PRIVATE).getString(KEY_URI, null);
         if (saved != null) {
             try { setTree(Uri.parse(saved)); } catch (Exception ignored) {}
         }
     }
 
-    // -------------------------------------------------------------
+    // =====================================================================
     // Recent files
-    // -------------------------------------------------------------
+    // =====================================================================
 
     private void addRecentFile(String treeUriStr, String relPath, String displayName) {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
@@ -139,9 +140,7 @@ public class MainActivity extends Activity {
         String[] labels = new String[recents.size()];
         for (int i = 0; i < recents.size(); i++) {
             String[] r = recents.get(i);
-            String relPath = r[1];
-            String displayName = r[2];
-            labels[i] = displayName + "   ·   " + shortenPath(relPath);
+            labels[i] = r[2] + "   ·   " + shortenPath(r[1]);
         }
 
         new AlertDialog.Builder(this)
@@ -150,14 +149,31 @@ public class MainActivity extends Activity {
                     String[] r = recents.get(w);
                     openFromRecent(r[0], r[1]);
                 })
-                .setNegativeButton("Clear", (d, w) -> {
-                    getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                            .remove(KEY_RECENT).apply();
-                })
+                .setNegativeButton("Clear", (d, w) ->
+                        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                                .remove(KEY_RECENT).apply())
                 .show();
     }
 
     private void openFromRecent(String treeUriStr, String relPath) {
+        // Audio files → MusicActivity with a document URI so MediaStore lookup
+        // can resolve by DATA path (or display name as fallback).
+        if (isAudioFile(relPath)) {
+            try {
+                Uri tree = Uri.parse(treeUriStr);
+                String docId = resolveDocIdForPath(tree, relPath);
+                if (docId != null) {
+                    Uri docUri = DocumentsContract.buildDocumentUriUsingTree(tree, docId);
+                    Intent i = new Intent(Intent.ACTION_VIEW);
+                    i.setClass(this, MusicActivity.class);
+                    i.setDataAndType(docUri, audioMimeFor(relPath));
+                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT);
+                    startActivity(i);
+                    return;
+                }
+            } catch (Exception ignored) {}
+        }
+
         try {
             Intent i = new Intent(this, WebViewActivity.class);
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT);
@@ -171,6 +187,16 @@ public class MainActivity extends Activity {
         }
     }
 
+    private String resolveDocIdForPath(Uri tree, String relPath) {
+        String cur = DocumentsContract.getTreeDocumentId(tree);
+        for (String part : relPath.split("/")) {
+            SafDoc child = SafDoc.find(getContentResolver(), tree, cur, part);
+            if (child == null) return null;
+            cur = child.docId;
+        }
+        return cur;
+    }
+
     private String shortenPath(String path) {
         if (path == null) return "";
         int idx = path.lastIndexOf('/');
@@ -180,19 +206,20 @@ public class MainActivity extends Activity {
         return folder + "/";
     }
 
-    // -------------------------------------------------------------
+    // =====================================================================
     // Music launcher toggle
-    // -------------------------------------------------------------
+    // =====================================================================
 
     private void syncMusicLauncherState() {
-        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        boolean enabled = prefs.getBoolean(KEY_MUSIC_ICON, true);
+        boolean enabled = getSharedPreferences(PREFS, MODE_PRIVATE)
+                .getBoolean(KEY_MUSIC_ICON, true);
         setMusicLauncherEnabled(enabled);
     }
 
     private void setMusicLauncherEnabled(boolean enabled) {
         try {
-            ComponentName alias = new ComponentName(this, "io.github.ronynn.hashiru.MusicLauncher");
+            ComponentName alias = new ComponentName(
+                    this, "io.github.ronynn.hashiru.MusicLauncher");
             int state = enabled
                     ? PackageManager.COMPONENT_ENABLED_STATE_ENABLED
                     : PackageManager.COMPONENT_ENABLED_STATE_DISABLED;
@@ -201,16 +228,15 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) {}
     }
 
-    // -------------------------------------------------------------
+    // =====================================================================
     // File context menu
-    // -------------------------------------------------------------
+    // =====================================================================
 
     private void showFileContextMenu(SafDoc d, int pos) {
         PopupMenu pm = new PopupMenu(this, list.getChildAt(pos));
         Menu m = pm.getMenu();
         m.add(0, 1, 0, d.isDir ? "Open" : "Edit");
         m.add(0, 2, 1, "Rename");
-        if (!d.isDir) m.add(0, 3, 2, "Copy");
         m.add(0, 4, 3, "Delete");
 
         pm.setOnMenuItemClickListener(item -> {
@@ -221,11 +247,10 @@ public class MainActivity extends Activity {
                         currentDocId = d.docId;
                         refresh();
                     } else {
-                        openInWebView(d, true);
+                        openDocument(d, true);
                     }
                     return true;
                 case 2: showRenameDialog(d); return true;
-                case 3: copyFile(d); return true;
                 case 4: confirmDelete(d); return true;
             }
             return false;
@@ -233,18 +258,30 @@ public class MainActivity extends Activity {
         pm.show();
     }
 
+    // =====================================================================
+    // New file / folder, rename (with pretty dialogs)
+    // =====================================================================
+
+    private void showNewItemMenu(View anchor) {
+        if (treeUri == null) { toast("Pick a folder first"); return; }
+        PopupMenu pm = new PopupMenu(this, anchor);
+        pm.getMenu().add(0, 1, 0, "New file");
+        pm.getMenu().add(0, 2, 1, "New folder");
+        pm.setOnMenuItemClickListener(item -> {
+            if (item.getItemId() == 1) showNewFileDialog();
+            else if (item.getItemId() == 2) showNewFolderDialog();
+            return true;
+        });
+        pm.show();
+    }
+
     private void showNewFileDialog() {
         if (treeUri == null) { toast("Pick a folder first"); return; }
-
-        final EditText input = new EditText(this);
-        input.setHint("filename.md");
-        input.setInputType(InputType.TYPE_CLASS_TEXT);
-        input.setTextColor(0xFFFFFFFF);
-        input.setHintTextColor(0xFF888888);
-
+        View container = buildInputContainer("File name", "notes.md", null);
+        EditText input = (EditText) container.getTag();
         new AlertDialog.Builder(this)
                 .setTitle("New file")
-                .setView(input)
+                .setView(container)
                 .setPositiveButton("Create", (d, w) -> {
                     String name = input.getText().toString().trim();
                     if (name.isEmpty()) return;
@@ -252,12 +289,8 @@ public class MainActivity extends Activity {
                     String mime = SafDoc.mimeForName(name);
                     SafDoc created = SafDoc.createFile(getContentResolver(),
                             treeUri, currentDocId, name, mime);
-                    if (created != null) {
-                        toast("Created " + name);
-                        refresh();
-                    } else {
-                        toast("Failed to create file");
-                    }
+                    if (created != null) { toast("Created " + name); refresh(); }
+                    else toast("Failed to create file");
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
@@ -265,51 +298,35 @@ public class MainActivity extends Activity {
 
     private void showNewFolderDialog() {
         if (treeUri == null) { toast("Pick a folder first"); return; }
-
-        final EditText input = new EditText(this);
-        input.setHint("Folder name");
-        input.setInputType(InputType.TYPE_CLASS_TEXT);
-        input.setTextColor(0xFFFFFFFF);
-        input.setHintTextColor(0xFF888888);
-
+        View container = buildInputContainer("Folder name", "New folder", null);
+        EditText input = (EditText) container.getTag();
         new AlertDialog.Builder(this)
                 .setTitle("New folder")
-                .setView(input)
+                .setView(container)
                 .setPositiveButton("Create", (d, w) -> {
                     String name = input.getText().toString().trim();
                     if (name.isEmpty()) return;
                     SafDoc created = SafDoc.createFolder(getContentResolver(),
                             treeUri, currentDocId, name);
-                    if (created != null) {
-                        toast("Created " + name);
-                        refresh();
-                    } else {
-                        toast("Failed to create folder");
-                    }
+                    if (created != null) { toast("Created " + name); refresh(); }
+                    else toast("Failed to create folder");
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
     }
 
     private void showRenameDialog(SafDoc d) {
-        final EditText input = new EditText(this);
-        input.setText(d.name);
-        input.setInputType(InputType.TYPE_CLASS_TEXT);
-        input.setTextColor(0xFFFFFFFF);
-        input.setSelection(input.getText().length());
-
+        View container = buildInputContainer("New name", d.name, d.name);
+        EditText input = (EditText) container.getTag();
         new AlertDialog.Builder(this)
                 .setTitle("Rename")
-                .setView(input)
+                .setView(container)
                 .setPositiveButton("Rename", (dlg, w) -> {
                     String newName = input.getText().toString().trim();
                     if (newName.isEmpty() || newName.equals(d.name)) return;
                     if (SafDoc.rename(getContentResolver(), treeUri, d, newName)) {
-                        toast("Renamed");
-                        refresh();
-                    } else {
-                        toast("Rename failed");
-                    }
+                        toast("Renamed"); refresh();
+                    } else toast("Rename failed");
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
@@ -321,43 +338,69 @@ public class MainActivity extends Activity {
                 .setMessage("Delete \"" + d.name + "\"?")
                 .setPositiveButton("Delete", (dlg, w) -> {
                     if (SafDoc.delete(getContentResolver(), treeUri, d)) {
-                        toast("Deleted");
-                        refresh();
-                    } else {
-                        toast("Delete failed");
-                    }
+                        toast("Deleted"); refresh();
+                    } else toast("Delete failed");
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
     }
 
-    private void copyFile(SafDoc d) {
-        String base = d.name;
-        String ext = "";
-        int dot = base.lastIndexOf('.');
-        if (dot > 0) { ext = base.substring(dot); base = base.substring(0, dot); }
+    /** Dark-themed label + rounded outline field that matches the rest of the UI. */
+    private View buildInputContainer(String labelText, String hint, String prefill) {
+        int pad = dp(20);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(pad, dp(12), pad, dp(4));
 
-        String newName;
-        int n = 1;
-        do {
-            newName = base + " (copy" + (n > 1 ? " " + n : "") + ")" + ext;
-            n++;
-        } while (SafDoc.find(getContentResolver(), treeUri, currentDocId, newName) != null
-                && n < 100);
+        TextView label = new TextView(this);
+        label.setText(labelText);
+        label.setTextColor(0xFF888888);
+        label.setTextSize(11);
+        label.setAllCaps(true);
+        label.setLetterSpacing(0.06f);
+        box.addView(label);
 
-        SafDoc copy = SafDoc.duplicateFile(getContentResolver(), treeUri,
-                d, currentDocId, newName);
-        if (copy != null) {
-            toast("Copied to " + newName);
-            refresh();
-        } else {
-            toast("Copy failed");
+        EditText input = new EditText(this);
+        input.setHint(hint);
+        input.setInputType(InputType.TYPE_CLASS_TEXT);
+        input.setTextColor(0xFFFFFFFF);
+        input.setHintTextColor(0xFF555555);
+        input.setTextSize(16);
+        input.setPadding(dp(12), dp(10), dp(12), dp(10));
+        input.setSingleLine(true);
+
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(0xFF1E1E1E);
+        bg.setCornerRadius(dp(8));
+        bg.setStroke(dp(1), 0xFF333333);
+        input.setBackground(bg);
+
+        if (prefill != null) {
+            input.setText(prefill);
+            input.setSelection(prefill.length());
         }
+
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(6);
+        box.addView(input, lp);
+
+        box.setTag(input);
+        return box;
     }
 
-    // -------------------------------------------------------------
+    private int dp(int v) {
+        return Math.round(v * getResources().getDisplayMetrics().density);
+    }
+
+    private void toast(String s) {
+        Toast.makeText(this, s, Toast.LENGTH_SHORT).show();
+    }
+
+    // =====================================================================
     // Settings menu
-    // -------------------------------------------------------------
+    // =====================================================================
 
     private void showSettingsMenu(View anchor) {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
@@ -458,13 +501,9 @@ public class MainActivity extends Activity {
         return 0;
     }
 
-    private void toast(String s) {
-        Toast.makeText(this, s, Toast.LENGTH_SHORT).show();
-    }
-
-    // -------------------------------------------------------------
+    // =====================================================================
     // Folder picking / navigation
-    // -------------------------------------------------------------
+    // =====================================================================
 
     private void pickFolder() {
         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
@@ -538,29 +577,73 @@ public class MainActivity extends Activity {
         }
     }
 
-    // -------------------------------------------------------------
-    // Open in WebViewActivity
-    // -------------------------------------------------------------
+    // =====================================================================
+    // Open a file (audio → MusicActivity; everything else → WebViewActivity)
+    // =====================================================================
+
+    private void openDocument(SafDoc d, boolean editMode) {
+        if (!d.isDir && isAudioFile(d.name)) {
+            openAudio(d);
+            return;
+        }
+        openInWebView(d, editMode);
+    }
+
+    private void openAudio(SafDoc d) {
+        try {
+            Uri docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, d.docId);
+            Intent i = new Intent(Intent.ACTION_VIEW);
+            i.setClass(this, MusicActivity.class);
+            i.setDataAndType(docUri, audioMimeFor(d.name));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT);
+            startActivity(i);
+        } catch (Exception e) {
+            toast("Cannot open audio");
+        }
+    }
 
     private void openInWebView(SafDoc d, boolean editMode) {
-        String rel;
-        if (folderPath.isEmpty()) rel = d.name;
-        else rel = String.join("/", folderPath) + "/" + d.name;
+        String rel = folderPath.isEmpty()
+                ? d.name
+                : String.join("/", folderPath) + "/" + d.name;
 
-        // Record in recents (view mode — edit-mode opens still land in the
-        // same entry so the user can pick the file up later in read mode).
         addRecentFile(treeUri.toString(), rel, d.name);
 
         Intent i = new Intent(this, WebViewActivity.class);
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT);
-
-        String identity = treeUri.toString() + "|" + rel
-                + (editMode ? "|edit" : "");
+        String identity = treeUri.toString() + "|" + rel + (editMode ? "|edit" : "");
         i.setData(Uri.parse("hashiru://open/" + Uri.encode(identity)));
-
         i.putExtra(WebViewActivity.EXTRA_TREE_URI, treeUri.toString());
         i.putExtra(WebViewActivity.EXTRA_REL_PATH, rel);
         i.putExtra(WebViewActivity.EXTRA_EDIT_MODE, editMode);
         startActivity(i);
+    }
+
+    // =====================================================================
+    // Audio helpers
+    // =====================================================================
+
+    private static boolean isAudioFile(String name) {
+        if (name == null) return false;
+        String s = name.toLowerCase();
+        return s.endsWith(".mp3")  || s.endsWith(".m4a")
+            || s.endsWith(".aac")  || s.endsWith(".ogg")
+            || s.endsWith(".oga")  || s.endsWith(".opus")
+            || s.endsWith(".flac") || s.endsWith(".wav")
+            || s.endsWith(".wma");
+    }
+
+    private static String audioMimeFor(String name) {
+        if (name == null) return "audio/*";
+        String s = name.toLowerCase();
+        if (s.endsWith(".mp3"))  return "audio/mpeg";
+        if (s.endsWith(".m4a"))  return "audio/mp4";
+        if (s.endsWith(".aac"))  return "audio/aac";
+        if (s.endsWith(".ogg") || s.endsWith(".oga")) return "audio/ogg";
+        if (s.endsWith(".opus")) return "audio/opus";
+        if (s.endsWith(".flac")) return "audio/flac";
+        if (s.endsWith(".wav"))  return "audio/wav";
+        if (s.endsWith(".wma"))  return "audio/x-ms-wma";
+        return "audio/*";
     }
 }

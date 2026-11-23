@@ -1,8 +1,6 @@
 package io.github.ronynn.hashiru;
 
 import android.app.Activity;
-import android.app.WallpaperManager;
-import android.app.WallpaperColors;
 import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
 import android.content.ContentUris;
@@ -16,6 +14,7 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.DocumentsContract;
 import android.provider.MediaStore;
 import android.util.Log;
 import android.view.View;
@@ -27,6 +26,7 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.Toast;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -46,21 +46,18 @@ public class MusicActivity extends Activity {
     private LocalFileServer server;
     private long pendingPlayId = -1;
     private long pendingCoverSongId = -1;
+    private Intent pendingAudioIntent = null;   // held until audio permission is granted
     private boolean permissionRequested = false;
     private boolean systemBarsLight = false;
 
     private final BroadcastReceiver mediaCmdReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context ctx, Intent intent) {
             String cmd = intent.getStringExtra("cmd");
-            if (cmd == null) {
-                Log.w(BRIDGE_TAG, "media cmd with no action");
-                return;
-            }
+            if (cmd == null) return;
             if ("seek".equals(cmd)) {
                 long pos = intent.getLongExtra("pos", -1);
-                if (pos >= 0) {
+                if (pos >= 0)
                     evalJs("window.__hashiruMusic && window.__hashiruMusic.cmd('seek', " + pos + ")");
-                }
                 return;
             }
             evalJs("window.__hashiruMusic && window.__hashiruMusic.cmd(" + jsStr(cmd) + ")");
@@ -91,8 +88,7 @@ public class MusicActivity extends Activity {
         web.addJavascriptInterface(new MusicBridge(), "__HashiruMusic");
 
         web.setWebViewClient(new WebViewClient() {
-            @Override
-            public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req) {
+            @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req) {
                 return false;
             }
         });
@@ -128,6 +124,10 @@ public class MusicActivity extends Activity {
         super.onConfigurationChanged(cfg);
         applySystemBars(cfg.orientation);
     }
+
+    // =====================================================================
+    // System bars
+    // =====================================================================
 
     private void applySystemBars(int orientation) {
         Window win = getWindow();
@@ -170,6 +170,10 @@ public class MusicActivity extends Activity {
         applySystemBars(getResources().getConfiguration().orientation);
     }
 
+    // =====================================================================
+    // Intent handling
+    // =====================================================================
+
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
@@ -185,37 +189,124 @@ public class MusicActivity extends Activity {
         if (!Intent.ACTION_VIEW.equals(intent.getAction())) return;
         Uri uri = intent.getData();
         if (uri == null) return;
+
+        if (!hasAudioPermission()) {
+            // Hold the intent until the permission dialog closes; we'll retry
+            // in onRequestPermissionsResult.
+            pendingAudioIntent = new Intent(intent);
+            return;
+        }
+
         long id = resolveMediaStoreId(uri);
-        if (id > 0) pendingPlayId = id;
-        else Log.w(TAG, "unrecognized audio URI: " + uri);
+        if (id > 0) {
+            pendingPlayId = id;
+        } else {
+            Log.w(TAG, "unrecognized audio URI: " + uri);
+            Toast.makeText(this,
+                    "Song not indexed in MediaStore — run a media scan and retry",
+                    Toast.LENGTH_LONG).show();
+        }
     }
 
+    private boolean hasAudioPermission() {
+        try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                return checkSelfPermission("android.permission.READ_MEDIA_AUDIO")
+                        == PackageManager.PERMISSION_GRANTED;
+            }
+            return checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+                    == PackageManager.PERMISSION_GRANTED;
+        } catch (Exception e) { return false; }
+    }
+
+    /**
+     * Turns any of these into a MediaStore audio _ID:
+     *   - content://media/external/audio/media/123           (direct ID)
+     *   - content://com.android.externalstorage.documents/…  (SAF, from MainActivity)
+     *   - content://com.android.providers.media.documents/…  (SAF via picker)
+     *   - plain media URI whose path matches MediaStore.DATA
+     */
     private long resolveMediaStoreId(Uri uri) {
         try {
             String authority = uri.getAuthority();
+
+            // 1. Direct MediaStore URI
             if (authority != null && authority.startsWith("media")) {
                 String last = uri.getLastPathSegment();
                 if (last != null) {
                     try { return Long.parseLong(last); } catch (Exception ignored) {}
                 }
             }
+
+            // 2. SAF content URI — decode docId, map to /storage path
+            if ("content".equals(uri.getScheme())
+                    && authority != null && authority.contains("documents")) {
+                try {
+                    String docId = DocumentsContract.getDocumentId(uri);
+                    if (docId != null && docId.contains(":")) {
+                        int colon = docId.indexOf(':');
+                        String volume = docId.substring(0, colon);
+                        String rel = docId.substring(colon + 1);
+
+                        String fullPath = "primary".equalsIgnoreCase(volume)
+                                ? "/storage/emulated/0/" + rel
+                                : "/storage/" + volume + "/" + rel;
+
+                        Long id = queryAudioIdByData(fullPath);
+                        if (id != null) return id;
+
+                        // Fallback: display name (handles files that have moved
+                        // between volumes since indexing)
+                        String display = rel.substring(rel.lastIndexOf('/') + 1);
+                        id = queryAudioIdByDisplayName(display);
+                        if (id != null) return id;
+                    }
+                } catch (Exception ignored) {}
+            }
+
+            // 3. Legacy: media authority + DATA path
             String path = uri.getPath();
-            if (path != null) {
-                Cursor c = getContentResolver().query(
-                        MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
-                        new String[]{MediaStore.Audio.Media._ID},
-                        MediaStore.Audio.Media.DATA + "=?",
-                        new String[]{path}, null);
-                if (c != null) {
-                    try { if (c.moveToFirst()) return c.getLong(0); }
-                    finally { c.close(); }
-                }
+            if (path != null && authority != null && authority.startsWith("media")) {
+                Long id = queryAudioIdByData(path);
+                if (id != null) return id;
             }
         } catch (Exception e) {
             Log.w(TAG, "resolveMediaStoreId failed", e);
         }
         return -1;
     }
+
+    private Long queryAudioIdByData(String fullPath) {
+        Cursor c = null;
+        try {
+            c = getContentResolver().query(
+                    MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                    new String[]{MediaStore.Audio.Media._ID},
+                    MediaStore.Audio.Media.DATA + "=?",
+                    new String[]{fullPath}, null);
+            if (c != null && c.moveToFirst()) return c.getLong(0);
+        } catch (Exception ignored) {
+        } finally { if (c != null) c.close(); }
+        return null;
+    }
+
+    private Long queryAudioIdByDisplayName(String displayName) {
+        Cursor c = null;
+        try {
+            c = getContentResolver().query(
+                    MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                    new String[]{MediaStore.Audio.Media._ID},
+                    MediaStore.Audio.Media.DISPLAY_NAME + "=?",
+                    new String[]{displayName}, null);
+            if (c != null && c.moveToFirst()) return c.getLong(0);
+        } catch (Exception ignored) {
+        } finally { if (c != null) c.close(); }
+        return null;
+    }
+
+    // =====================================================================
+    // Permissions
+    // =====================================================================
 
     private void requestPerms() {
         if (permissionRequested) return;
@@ -240,23 +331,33 @@ public class MusicActivity extends Activity {
 
     @Override public void onRequestPermissionsResult(int req, String[] perms, int[] results) {
         super.onRequestPermissionsResult(req, perms, results);
-        if (req == REQ_AUDIO_PERM) {
-            boolean postNotif = true;
-            if (Build.VERSION.SDK_INT >= 33) {
-                for (int i = 0; i < perms.length; i++) {
-                    if ("android.permission.POST_NOTIFICATIONS".equals(perms[i])
-                            && results[i] != PackageManager.PERMISSION_GRANTED) {
-                        postNotif = false;
-                    }
-                }
+        if (req != REQ_AUDIO_PERM) return;
+
+        boolean postNotif = true;
+        if (Build.VERSION.SDK_INT >= 33) {
+            for (int i = 0; i < perms.length; i++) {
+                if ("android.permission.POST_NOTIFICATIONS".equals(perms[i])
+                        && results[i] != PackageManager.PERMISSION_GRANTED)
+                    postNotif = false;
             }
-            if (!postNotif) {
-                evalJs("window.__hashiruMusic && window.__hashiruMusic.notifyPermissionDenied && "
-                        + "window.__hashiruMusic.notifyPermissionDenied()");
-            }
-            evalJs("window.__hashiruMusic && window.__hashiruMusic.rescan && window.__hashiruMusic.rescan()");
         }
+        if (!postNotif)
+            evalJs("window.__hashiruMusic && window.__hashiruMusic.notifyPermissionDenied && "
+                    + "window.__hashiruMusic.notifyPermissionDenied()");
+
+        // Retry the intent that was held back before permission was granted.
+        if (pendingAudioIntent != null && hasAudioPermission()) {
+            Intent deferred = pendingAudioIntent;
+            pendingAudioIntent = null;
+            handleAudioIntent(deferred);
+        }
+
+        evalJs("window.__hashiruMusic && window.__hashiruMusic.rescan && window.__hashiruMusic.rescan()");
     }
+
+    // =====================================================================
+    // JS eval helpers
+    // =====================================================================
 
     private void evalJs(String js) {
         if (web == null) return;
@@ -279,6 +380,10 @@ public class MusicActivity extends Activity {
         sb.append("'");
         return sb.toString();
     }
+
+    // =====================================================================
+    // Cover picker
+    // =====================================================================
 
     private void saveCoverFor(long songId, Uri src) {
         File dir = new File(getFilesDir(), "covers");
@@ -350,6 +455,10 @@ public class MusicActivity extends Activity {
         }
     }
 
+    // =====================================================================
+    // Lifecycle teardown
+    // =====================================================================
+
     @Override protected void onDestroy() {
         try { unregisterReceiver(mediaCmdReceiver); } catch (Exception ignored) {}
         if (isFinishing()) {
@@ -364,18 +473,17 @@ public class MusicActivity extends Activity {
         super.onDestroy();
     }
 
-    /** Safe way to start the service for any command. */
     private void startServiceSafe(Intent i) {
         try {
-            if (Build.VERSION.SDK_INT >= 26) {
-                startService(i);
-            } else {
-                startService(i);
-            }
+            startService(i);
         } catch (Exception e) {
             Log.w(BRIDGE_TAG, "service start failed for " + i.getAction(), e);
         }
     }
+
+    // =====================================================================
+    // JS bridge
+    // =====================================================================
 
     public class MusicBridge {
 
@@ -412,45 +520,31 @@ public class MusicActivity extends Activity {
         }
 
         @JavascriptInterface public void onPause() {
-            runOnUiThread(() -> {
-                try {
-                    Intent i = new Intent(MusicActivity.this, MusicPlaybackService.class);
-                    i.setAction(MusicPlaybackService.ACTION_PAUSE);
-                    startServiceSafe(i);
-                } catch (Exception ignored) {}
-            });
+            runOnUiThread(() -> startServiceSafe(new Intent(
+                    MusicActivity.this, MusicPlaybackService.class)
+                    .setAction(MusicPlaybackService.ACTION_PAUSE)));
         }
 
         @JavascriptInterface public void onStop() {
-            runOnUiThread(() -> {
-                try {
-                    Intent i = new Intent(MusicActivity.this, MusicPlaybackService.class);
-                    i.setAction(MusicPlaybackService.ACTION_STOP);
-                    startServiceSafe(i);
-                } catch (Exception ignored) {}
-            });
+            runOnUiThread(() -> startServiceSafe(new Intent(
+                    MusicActivity.this, MusicPlaybackService.class)
+                    .setAction(MusicPlaybackService.ACTION_STOP)));
         }
 
         @JavascriptInterface public void onPosition(final long posMs, final long durMs) {
             runOnUiThread(() -> {
-                try {
-                    Intent i = new Intent(MusicActivity.this, MusicPlaybackService.class);
-                    i.setAction(MusicPlaybackService.ACTION_UPDATE_POSITION);
-                    i.putExtra(MusicPlaybackService.EXTRA_POSITION, posMs);
-                    i.putExtra(MusicPlaybackService.EXTRA_DURATION, durMs);
-                    startServiceSafe(i);
-                } catch (Exception ignored) {}
+                Intent i = new Intent(MusicActivity.this, MusicPlaybackService.class);
+                i.setAction(MusicPlaybackService.ACTION_UPDATE_POSITION);
+                i.putExtra(MusicPlaybackService.EXTRA_POSITION, posMs);
+                i.putExtra(MusicPlaybackService.EXTRA_DURATION, durMs);
+                startServiceSafe(i);
             });
         }
 
         @JavascriptInterface public void refreshNotification() {
-            runOnUiThread(() -> {
-                try {
-                    Intent i = new Intent(MusicActivity.this, MusicPlaybackService.class);
-                    i.setAction(MusicPlaybackService.ACTION_UPDATE_META);
-                    startServiceSafe(i);
-                } catch (Exception ignored) {}
-            });
+            runOnUiThread(() -> startServiceSafe(new Intent(
+                    MusicActivity.this, MusicPlaybackService.class)
+                    .setAction(MusicPlaybackService.ACTION_UPDATE_META)));
         }
 
         @JavascriptInterface public void pickCover(final long songId) {
@@ -482,7 +576,8 @@ public class MusicActivity extends Activity {
         }
 
         @JavascriptInterface public boolean getSystemDark() {
-            int mode = getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
+            int mode = getResources().getConfiguration().uiMode
+                    & Configuration.UI_MODE_NIGHT_MASK;
             return mode == Configuration.UI_MODE_NIGHT_YES;
         }
 
